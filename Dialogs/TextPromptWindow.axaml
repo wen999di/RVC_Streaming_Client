@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ClientAvalonia.Dialogs.TextPromptWindow"
+        Width="460"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="输入">
+  <Border Background="{StaticResource CanvasSoftBrush}" Padding="20">
+    <StackPanel Spacing="14">
+      <TextBlock x:Name="PromptTextBlock" Text="请输入内容" FontSize="16" FontWeight="SemiBold" />
+      <TextBox x:Name="InputTextBox" PlaceholderText="请输入" />
+      <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+        <Button Classes="secondary-action" Content="取消" Click="Cancel_OnClick" />
+        <Button Grid.Column="1" Classes="primary-action" Content="确定" Click="Confirm_OnClick" />
+      </Grid>
+    </StackPanel>
+  </Border>
+</Window>

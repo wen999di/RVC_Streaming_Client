@@ -1,0 +1,33 @@
+# .NET build artifacts
+bin/
+obj/
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# VS Code
+.vscode/
+
+# Rider
+.idea/
+
+# Visual Studio
+.vs/
+*.sln.ide/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Avalonia specific
+*.axaml.cs~
+*.axaml~

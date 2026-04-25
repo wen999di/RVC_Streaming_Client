@@ -1,0 +1,18 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ClientAvalonia.Dialogs.ConfirmWindow"
+        Width="440"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="确认">
+  <Border Background="{StaticResource CanvasSoftBrush}" Padding="20">
+    <StackPanel Spacing="16">
+      <TextBlock x:Name="MessageTextBlock" Text="确认执行该操作吗？" TextWrapping="Wrap" FontSize="16" FontWeight="SemiBold" />
+      <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+        <Button Classes="secondary-action" Content="取消" Click="Cancel_OnClick" />
+        <Button Grid.Column="1" Classes="primary-action" Content="确定" Click="Confirm_OnClick" />
+      </Grid>
+    </StackPanel>
+  </Border>
+</Window>

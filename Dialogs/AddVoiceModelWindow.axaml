@@ -1,0 +1,60 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ClientAvalonia.Dialogs.AddVoiceModelWindow"
+        Width="460"
+        SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="添加音色模型">
+  <Border Background="{StaticResource CanvasSoftBrush}" Padding="20">
+    <StackPanel Spacing="14">
+      <TextBlock Text="添加音色模型" FontSize="16" FontWeight="SemiBold" />
+
+      <!-- Name -->
+      <StackPanel Spacing="6">
+        <TextBlock Text="名称" FontSize="12" Foreground="{StaticResource TextMutedBrush}" />
+        <TextBox x:Name="NameTextBox" PlaceholderText="" />
+      </StackPanel>
+
+      <!-- PTH drop zone -->
+      <StackPanel Spacing="6">
+        <TextBlock Text=".pth 文件（必选，从右侧文件列表拖入）" FontSize="12" Foreground="{StaticResource TextMutedBrush}" />
+        <Border x:Name="PthDropBorder"
+                Background="{StaticResource SurfaceWarmBrush}"
+                BorderBrush="{StaticResource BorderSoftBrush}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="12,10"
+                DragDrop.AllowDrop="True">
+          <TextBlock x:Name="PthFileText"
+                     Text="拖入一个 .pth 文件"
+                     Foreground="{StaticResource TextMutedBrush}"
+                     TextTrimming="CharacterEllipsis" />
+        </Border>
+      </StackPanel>
+
+      <!-- Index drop zone -->
+      <StackPanel Spacing="6">
+        <TextBlock Text=".index 文件（可选，从右侧文件列表拖入）" FontSize="12" Foreground="{StaticResource TextMutedBrush}" />
+        <Border x:Name="IndexDropBorder"
+                Background="{StaticResource SurfaceWarmBrush}"
+                BorderBrush="{StaticResource BorderSoftBrush}"
+                BorderThickness="1"
+                CornerRadius="6"
+                Padding="12,10"
+                DragDrop.AllowDrop="True">
+          <TextBlock x:Name="IndexFileText"
+                     Text="拖入一个 .index 文件（可不填）"
+                     Foreground="{StaticResource TextMutedBrush}"
+                     TextTrimming="CharacterEllipsis" />
+        </Border>
+      </StackPanel>
+
+      <!-- Buttons -->
+      <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+        <Button Classes="secondary-action" Content="取消" Click="Cancel_OnClick" />
+        <Button Grid.Column="1" Classes="primary-action" Content="确定" Click="Confirm_OnClick" />
+      </Grid>
+    </StackPanel>
+  </Border>
+</Window>
