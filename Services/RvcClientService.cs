@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -6,12 +7,17 @@ namespace ClientAvalonia.Services;
 
 public sealed class RvcClientService : IAsyncDisposable
 {
-    private ClientWebSocket? _webSocket;
+    private ClientWebSocket? _controlSocket;
+    private ClientWebSocket? _audioSocket;
     private CancellationTokenSource? _connectionCts;
     private CancellationTokenSource? _pingCts;
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly SemaphoreSlim _controlSendLock = new(1, 1);
+    private readonly SemaphoreSlim _audioSendLock = new(1, 1);
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private long _generation;
 
-    public bool IsConnected => _webSocket?.State == WebSocketState.Open;
+    public bool IsConnected =>
+        _controlSocket?.State == WebSocketState.Open && _audioSocket?.State == WebSocketState.Open;
 
     public event EventHandler<string>? LogReceived;
     public event EventHandler<bool>? ConnectionStateChanged;
@@ -20,148 +26,175 @@ public sealed class RvcClientService : IAsyncDisposable
 
     public async Task ConnectAsync(string serverUri)
     {
-        if (IsConnected)
-        {
-            return;
-        }
-
-        if (!Uri.TryCreate(serverUri, UriKind.Absolute, out var uri))
-        {
-            throw new InvalidOperationException("无效的服务器地址。");
-        }
-
-        var socket = new ClientWebSocket();
-        var cts = new CancellationTokenSource();
-
+        await _lifecycleLock.WaitAsync();
         try
         {
-            await socket.ConnectAsync(uri, cts.Token);
+            if (IsConnected) return;
+            if (!Uri.TryCreate(serverUri, UriKind.Absolute, out var baseUri)
+                || (baseUri.Scheme != "ws" && baseUri.Scheme != "wss"))
+                throw new InvalidOperationException("服务器地址必须使用 ws:// 或 wss://。");
+
+            var token = Environment.GetEnvironmentVariable("RVC_STREAMING_TOKEN");
+            bool insecureRemote = baseUri.Scheme == "ws" && !baseUri.IsLoopback;
+            if (insecureRemote
+                && !string.Equals(Environment.GetEnvironmentVariable("RVC_ALLOW_INSECURE_WS"), "1", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "远程连接默认要求 wss://。仅可信私有网络可设置 RVC_ALLOW_INSECURE_WS=1。"
+                );
+            }
+            if (!baseUri.IsLoopback && string.IsNullOrWhiteSpace(token))
+                throw new InvalidOperationException("远程连接需要设置 RVC_STREAMING_TOKEN。");
+
+            await DisconnectCoreAsync(null, false);
+            var cts = new CancellationTokenSource();
+            var control = CreateSocket();
+            var audio = CreateSocket();
+            var generation = Interlocked.Increment(ref _generation);
+
+            try
+            {
+                await control.ConnectAsync(BuildEndpoint(baseUri, "/control"), cts.Token);
+                await audio.ConnectAsync(BuildEndpoint(baseUri, "/audio"), cts.Token);
+            }
+            catch
+            {
+                cts.Cancel();
+                control.Dispose();
+                audio.Dispose();
+                cts.Dispose();
+                throw;
+            }
+
+            _controlSocket = control;
+            _audioSocket = audio;
+            _connectionCts = cts;
+            _pingCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+
+            _ = Task.Run(() => ReceiveLoopAsync(control, generation, cts.Token), cts.Token);
+            _ = Task.Run(() => ReceiveLoopAsync(audio, generation, cts.Token), cts.Token);
+            _ = Task.Run(() => PingLoopAsync(_pingCts.Token), _pingCts.Token);
+
+            RaiseLog($"已连接到 {serverUri}（control/audio 双通道）");
+            ConnectionStateChanged?.Invoke(this, true);
         }
-        catch
+        finally
         {
-            socket.Dispose();
-            cts.Dispose();
-            throw;
+            _lifecycleLock.Release();
         }
-
-        _webSocket = socket;
-        _connectionCts = cts;
-        RaiseLog($"已连接到 {serverUri}");
-        ConnectionStateChanged?.Invoke(this, true);
-
-        _ = Task.Run(() => ReceiveLoopAsync(cts.Token), cts.Token);
-
-        _pingCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-        _ = Task.Run(() => PingLoopAsync(_pingCts.Token), _pingCts.Token);
     }
 
     public async Task DisconnectAsync(string reason = "已断开连接")
     {
-        var socket = _webSocket;
-        var cts = _connectionCts;
-        var pingCts = _pingCts;
-
-        _webSocket = null;
-        _connectionCts = null;
-        _pingCts = null;
-
+        await _lifecycleLock.WaitAsync();
         try
         {
-            pingCts?.Cancel();
-        }
-        catch
-        {
-        }
-
-        try
-        {
-            cts?.Cancel();
-        }
-        catch
-        {
-        }
-
-        try
-        {
-            if (socket is { State: WebSocketState.Open or WebSocketState.CloseReceived })
-            {
-                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client disconnecting", CancellationToken.None);
-            }
-        }
-        catch
-        {
+            await DisconnectCoreAsync(reason, true);
         }
         finally
         {
-            socket?.Dispose();
-            cts?.Dispose();
-            pingCts?.Dispose();
+            _lifecycleLock.Release();
         }
-
-        ConnectionStateChanged?.Invoke(this, false);
-        RaiseLog(reason);
     }
 
-    public async Task SendCommandAsync(object commandObj, CancellationToken cancellationToken = default)
+    public Task SendCommandAsync(object commandObj, CancellationToken cancellationToken = default)
     {
-        var socket = _webSocket;
-        if (socket?.State != WebSocketState.Open)
-        {
-            RaiseLog("未连接到服务器");
-            return;
-        }
-
-        try
-        {
-            var json = JsonSerializer.Serialize(commandObj);
-            var bytes = Encoding.UTF8.GetBytes(json);
-            await _sendLock.WaitAsync(cancellationToken);
-            try
-            {
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken);
-            }
-            finally
-            {
-                _sendLock.Release();
-            }
-        }
-        catch (Exception ex)
-        {
-            RaiseLog($"发送命令失败: {ex.Message}");
-        }
+        var json = JsonSerializer.Serialize(commandObj);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        bool audioRoute = IsAudioControl(json);
+        return SendAsync(
+            audioRoute ? _audioSocket : _controlSocket,
+            audioRoute ? _audioSendLock : _controlSendLock,
+            bytes,
+            WebSocketMessageType.Text,
+            cancellationToken,
+            audioRoute ? "音频控制命令" : "命令");
     }
 
-    public async Task SendBinaryAsync(byte[] payload, CancellationToken cancellationToken = default)
-    {
-        var socket = _webSocket;
-        if (socket?.State != WebSocketState.Open)
-        {
-            RaiseLog("未连接到服务器");
-            return;
-        }
+    // File-transfer binary frames use the control channel.
+    public Task SendBinaryAsync(byte[] payload, CancellationToken cancellationToken = default) =>
+        SendAsync(_controlSocket, _controlSendLock, payload, WebSocketMessageType.Binary, cancellationToken, "文件数据");
 
-        try
-        {
-            await _sendLock.WaitAsync(cancellationToken);
-            try
-            {
-                await socket.SendAsync(payload, WebSocketMessageType.Binary, true, cancellationToken);
-            }
-            finally
-            {
-                _sendLock.Release();
-            }
-        }
-        catch (Exception ex)
-        {
-            RaiseLog($"发送二进制数据失败: {ex.Message}");
-        }
-    }
+    public Task SendAudioAsync(byte[] payload, CancellationToken cancellationToken = default) =>
+        SendAsync(_audioSocket, _audioSendLock, payload, WebSocketMessageType.Binary, cancellationToken, "音频数据");
 
     public async ValueTask DisposeAsync()
     {
         await DisconnectAsync();
-        _sendLock.Dispose();
+        _controlSendLock.Dispose();
+        _audioSendLock.Dispose();
+        _lifecycleLock.Dispose();
+    }
+
+    private static Uri BuildEndpoint(Uri baseUri, string path)
+    {
+        var builder = new UriBuilder(baseUri) { Path = path, Query = string.Empty };
+        return builder.Uri;
+    }
+
+    private static ClientWebSocket CreateSocket()
+    {
+        var socket = new ClientWebSocket();
+        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+        var token = Environment.GetEnvironmentVariable("RVC_STREAMING_TOKEN");
+        if (!string.IsNullOrWhiteSpace(token))
+            socket.Options.SetRequestHeader("Authorization", $"Bearer {token.Trim()}");
+        return socket;
+    }
+
+    private static bool IsAudioControl(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("config", out _)) return true;
+            if (!root.TryGetProperty("command", out var commandElement)) return false;
+            var command = commandElement.GetString() ?? string.Empty;
+            return command is "stream_start" or "stream_stop";
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task SendAsync(
+        ClientWebSocket? socket,
+        SemaphoreSlim sendLock,
+        byte[] payload,
+        WebSocketMessageType type,
+        CancellationToken cancellationToken,
+        string label)
+    {
+        if (socket?.State != WebSocketState.Open)
+        {
+            RaiseLog($"{label}发送失败：连接未就绪");
+            if (_connectionCts != null)
+                await DisconnectAsync("连接已关闭");
+            return;
+        }
+
+        try
+        {
+            await sendLock.WaitAsync(cancellationToken);
+            try
+            {
+                await socket.SendAsync(payload, type, true, cancellationToken);
+            }
+            finally
+            {
+                sendLock.Release();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            RaiseLog($"{label}发送失败: {ex.Message}");
+            await DisconnectAsync("连接已关闭");
+        }
     }
 
     private async Task PingLoopAsync(CancellationToken token)
@@ -170,12 +203,11 @@ public sealed class RvcClientService : IAsyncDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                if (_webSocket?.State == WebSocketState.Open)
+                if (IsConnected)
                 {
-                    var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var ts = Stopwatch.GetTimestamp();
                     await SendCommandAsync(new { command = "ping", ts }, token);
                 }
-
                 await Task.Delay(2000, token);
             }
         }
@@ -188,44 +220,28 @@ public sealed class RvcClientService : IAsyncDisposable
         }
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken token)
+    private async Task ReceiveLoopAsync(ClientWebSocket socket, long generation, CancellationToken token)
     {
-        var receiveBuffer = new byte[4096];
-        var messageBuffer = new List<byte>();
-
+        var receiveBuffer = new byte[16 * 1024];
         try
         {
-            while (_webSocket?.State == WebSocketState.Open && !token.IsCancellationRequested)
+            while (socket.State == WebSocketState.Open && !token.IsCancellationRequested)
             {
+                using var message = new MemoryStream();
                 WebSocketReceiveResult result;
-                messageBuffer.Clear();
-
                 do
                 {
-                    result = await _webSocket.ReceiveAsync(receiveBuffer, token);
-                    if (result.MessageType == WebSocketMessageType.Close)
-                    {
-                        break;
-                    }
-
-                    messageBuffer.AddRange(receiveBuffer.AsSpan(0, result.Count).ToArray());
+                    result = await socket.ReceiveAsync(receiveBuffer, token);
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+                    message.Write(receiveBuffer, 0, result.Count);
                 } while (!result.EndOfMessage);
 
-                if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    break;
-                }
-
+                if (result.MessageType == WebSocketMessageType.Close) break;
+                var data = message.ToArray();
                 if (result.MessageType == WebSocketMessageType.Text)
-                {
-                    TextMessageReceived?.Invoke(this, Encoding.UTF8.GetString(messageBuffer.ToArray()));
-                    continue;
-                }
-
-                if (result.MessageType == WebSocketMessageType.Binary)
-                {
-                    BinaryMessageReceived?.Invoke(this, messageBuffer.ToArray());
-                }
+                    TextMessageReceived?.Invoke(this, Encoding.UTF8.GetString(data));
+                else if (result.MessageType == WebSocketMessageType.Binary)
+                    BinaryMessageReceived?.Invoke(this, data);
             }
         }
         catch (OperationCanceledException)
@@ -233,19 +249,61 @@ public sealed class RvcClientService : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            RaiseLog($"接收循环出错: {ex.Message}");
+            if (!token.IsCancellationRequested)
+                RaiseLog($"接收循环出错: {ex.Message}");
         }
         finally
         {
-            if (!token.IsCancellationRequested && _webSocket != null)
-            {
+            if (!token.IsCancellationRequested && generation == Interlocked.Read(ref _generation))
                 await DisconnectAsync("连接已关闭");
-            }
         }
     }
 
-    private void RaiseLog(string message)
+    private async Task DisconnectCoreAsync(string? reason, bool notify)
     {
-        LogReceived?.Invoke(this, message);
+        var control = _controlSocket;
+        var audio = _audioSocket;
+        var cts = _connectionCts;
+        var pingCts = _pingCts;
+        bool hadConnection = control != null || audio != null;
+
+        _controlSocket = null;
+        _audioSocket = null;
+        _connectionCts = null;
+        _pingCts = null;
+        Interlocked.Increment(ref _generation);
+
+        try { pingCts?.Cancel(); } catch { }
+        try { cts?.Cancel(); } catch { }
+
+        await CloseSocketAsync(control);
+        await CloseSocketAsync(audio);
+        cts?.Dispose();
+        pingCts?.Dispose();
+
+        if (notify && hadConnection)
+        {
+            ConnectionStateChanged?.Invoke(this, false);
+            if (!string.IsNullOrWhiteSpace(reason)) RaiseLog(reason);
+        }
     }
+
+    private static async Task CloseSocketAsync(ClientWebSocket? socket)
+    {
+        if (socket == null) return;
+        try
+        {
+            if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Client disconnecting", CancellationToken.None);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            socket.Dispose();
+        }
+    }
+
+    private void RaiseLog(string message) => LogReceived?.Invoke(this, message);
 }

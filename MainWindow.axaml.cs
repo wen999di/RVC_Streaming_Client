@@ -40,7 +40,7 @@ public partial class MainWindow : Window
     {
         public long TsNs { get; init; }
         public double TotalMs { get; init; }
-        public double RttMs { get; init; }
+        public double ServerQueueMs { get; init; }
         public double InferMs { get; init; }
     }
 
@@ -142,7 +142,7 @@ public partial class MainWindow : Window
     private readonly VoiceModelItem _serverRawVoiceModelItem = new() { Id = VoiceModelItem.ServerRawId, Name = "输出原声(经服务器)", Pth = string.Empty, Index = string.Empty, IsActive = false, ShowStatusDot = false };
     private readonly JitterEstimator _jitterEstimator = new();
     private readonly ConcurrentQueue<byte[]> _audioSendQueue = new();
-    private readonly SemaphoreSlim _audioSendSignal = new(0);
+    private SemaphoreSlim? _audioSendSignal;
     private readonly List<LatencySample> _latencySamples = new();
     private readonly object _captureLock = new();
     private readonly List<ServerFileItem> _serverFilesRaw = new();
@@ -175,9 +175,9 @@ public partial class MainWindow : Window
     private string _modelPath = string.Empty;
     private string _indexPath = string.Empty;
     private int _f0UpKey;
-    private float _blockTime = 0.25f;
+    private float _blockTime = 0.16f;
     private float _crossfadeLength = 0.04f;
-    private float _extraTime = 2.0f;
+    private float _extraTime = 1.0f;
     private int _serverStreamChunkMs = 20;
     private float _formantShift;
     private string _f0Method = "rmvpe";
@@ -197,8 +197,8 @@ public partial class MainWindow : Window
 
     private bool _useAdaptiveBuffer = true;
     private int _targetBufferLatency = 40;
-    private int _maxBufferMs = 1000;
-    private int _bufferCapacityMs = 5000;
+    private int _maxBufferMs = 500;
+    private int _bufferCapacityMs = 1500;
     private int _networkSliceMs = 20;
     private int _silenceDropOffset = 20;
     private float _silenceThreshold = 0.005f;
@@ -214,23 +214,27 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _streamingCts;
     private Task? _audioSendLoopTask;
     private int _audioSendQueueCount;
-    private int _maxAudioSendQueuePackets = 25;
+    private int _maxAudioSendQueuePackets = 8;
     private long _lastSendDropLogNs;
     private TaskCompletionSource<(string UploadId, string Name, long ReceivedBytes, long TotalBytes)>? _uploadReadyTcs;
     private TaskCompletionSource<(string UploadId, string FinalName)>? _uploadDoneTcs;
 
     private long _monoBaseTimestamp;
-    private long _nextCaptureAudioTsNs;
     private long _streamStartNs;
-    private int _streamSessionId;
+    private long _streamSessionId;
+    private int _audioSequence;
+    private long _captureMediaCursorNs;
     private double _emaTotalLatencyMs;
     private double _emaInferLatencyMs;
-    private double _emaQueueLatencyMs;
+    private double _emaServerQueueLatencyMs;
     private bool _hasLatencyEstimate;
+    private uint _lastOutputSequence;
+    private bool _hasOutputSequence;
     private int _effectiveServerBlockMs;
     private int _pendingLatencyReset;
     private const double LatencyEmaAlpha = 0.2;
     private bool _isPlaying;
+    private int _captureActive;
     private bool _playbackStarted;
     private bool _bypassServerVoice;
     private bool _serverPassthroughVoice;
@@ -241,7 +245,7 @@ public partial class MainWindow : Window
     private const int WaveformFrameSamples = SampleRate / 50;
     private const long WaveformFrameDurationNs = WaveformFrameSamples * NsPerSample;
     private const long WaveformInterpolationMaxGapNs = WaveformFrameDurationNs * 8;
-    private const long CaptureTimestampResyncThresholdNs = 1_000_000_000L;
+    private const long CaptureTimestampResyncThresholdNs = 250_000_000L;
     private const long WaveformWindowNs = 8_000_000_000L;
     private const long WaveformRetentionNs = 30_000_000_000L;
     private const double WaveformFloorDb = -60.0;
@@ -571,7 +575,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void StreamingToggleButton_OnClick(object? sender, RoutedEventArgs e)
+    private async void StreamingToggleButton_OnClick(object? sender, RoutedEventArgs e)
     {
         if (_isPlaying)
         {
@@ -581,11 +585,12 @@ public partial class MainWindow : Window
 
         try
         {
-            StartStreaming();
+            await StartStreamingAsync();
         }
         catch (Exception ex)
         {
             Log($"启动变声失败: {ex.Message}");
+            StopStreaming();
             UpdateStreamingUi(false);
         }
     }
@@ -1275,6 +1280,7 @@ public partial class MainWindow : Window
         _maxBufferMs = (int)Math.Round(MaxBufferSlider.Value);
         _bufferCapacityMs = (int)Math.Round(BufferCapacitySlider.Value);
         _networkSliceMs = (int)Math.Round(NetworkSliceSlider.Value);
+        if (_isPlaying) UpdateCaptureReadBufferSize();
         _useAdaptiveBuffer = AutoBufferBtn.Classes.Contains("active");
         _jitterEstimator.JitterFactor = JitterFactorSlider.Value;
         _jitterEstimator.MinBufferMs = MinBufferSlider.Value;
@@ -1283,6 +1289,13 @@ public partial class MainWindow : Window
 
         if (_waveProvider != null)
         {
+            if (_waveProvider.BufferedDuration.TotalMilliseconds > _bufferCapacityMs)
+            {
+                int targetMs = _useAdaptiveBuffer
+                    ? _jitterEstimator.GetTargetBufferMs(10)
+                    : _targetBufferLatency;
+                TrimPlaybackBufferTo(Math.Min(targetMs, _bufferCapacityMs / 2));
+            }
             _waveProvider.BufferDuration = TimeSpan.FromMilliseconds(_bufferCapacityMs);
         }
     }
@@ -1324,12 +1337,18 @@ public partial class MainWindow : Window
         _selectedVoiceModelId = id;
         UpdateVoiceModelSelectionState();
 
+        bool targetBypass = string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal);
+        if (_isPlaying && _bypassServerVoice != targetBypass)
+        {
+            StopStreaming();
+        }
+
         if (string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal))
         {
             _bypassServerVoice = true;
             _serverPassthroughVoice = false;
             ModelStatusTextBlock.Text = "原声";
-            Log("已切换到本地原声模式。实时音频链路待迁移。");
+            Log("已切换到本地原声模式。");
             UpdateStreamingToggleEnabled();
             return;
         }
@@ -1390,6 +1409,11 @@ public partial class MainWindow : Window
         if (!_client.IsConnected)
         {
             Log("请先连接服务器，再加载模型到显存。");
+            return;
+        }
+        if (_isPlaying)
+        {
+            Log("实时变声期间不加载新的显存模型，请先停止音频流。");
             return;
         }
 
@@ -1594,62 +1618,73 @@ public partial class MainWindow : Window
         BlockTimeValueText?.Text = $"{e.NewValue:F0} ms";
         if (!_uiInitialized) return;
         UpdateBlockTimeValidationUi();
-        _ = ApplyServerSettingsAsync();
+        _blockTime = (float)e.NewValue / 1000f;
+        if (_isPlaying) UpdateCaptureReadBufferSize();
+        ScheduleRealtimeConfigSend();
     }
 
     private void CrossfadeSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         CrossfadeValueText?.Text = $"{e.NewValue:F0} ms";
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _crossfadeLength = (float)e.NewValue / 1000f;
+        ScheduleRealtimeConfigSend();
     }
 
     private void ExtraTimeSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         ExtraTimeValueText?.Text = $"{e.NewValue:F0} ms";
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _extraTime = (float)e.NewValue / 1000f;
+        ScheduleRealtimeConfigSend();
     }
 
     private void ServerStreamChunkSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         ServerStreamChunkValueText?.Text = $"{e.NewValue:F0} ms";
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _serverStreamChunkMs = (int)Math.Round(e.NewValue);
+        ScheduleRealtimeConfigSend();
     }
 
     private void SilenceDbSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         SilenceDbValueText?.Text = $"{e.NewValue:F0} dB";
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _silenceDbThreshold = (float)e.NewValue;
+        ScheduleRealtimeConfigSend();
     }
 
     private void SilenceGateAttenSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         SilenceGateAttenValueText?.Text = e.NewValue.ToString("0.00");
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _silenceGateAtten = (float)e.NewValue;
+        ScheduleRealtimeConfigSend();
     }
 
     private void NoiseReduceStrengthSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         NoiseReduceStrengthValueText?.Text = e.NewValue.ToString("0.00");
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _noiseReducePropDecrease = (float)e.NewValue;
+        ScheduleRealtimeConfigSend();
     }
 
     private void RmsMixRateSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
         RmsMixRateValueText?.Text = e.NewValue.ToString("0.00");
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _rmsMixRate = (float)e.NewValue;
+        ScheduleRealtimeConfigSend();
     }
 
     private void NoiseReduce_OnChange(object? sender, RoutedEventArgs e)
     {
         if (!_uiInitialized) return;
-        _ = ApplyServerSettingsAsync();
+        _inputNoiseReduce = InputNoiseReduceSwitch.IsChecked == true;
+        _outputNoiseReduce = OutputNoiseReduceSwitch.IsChecked == true;
+        ScheduleRealtimeConfigSend();
     }
 
     private void F0Method_OnClick(object? sender, RoutedEventArgs e)
@@ -1661,7 +1696,8 @@ public partial class MainWindow : Window
         var isRmvpe = btn == F0RmvpeBtn;
         SetSegmentedToggle(F0RmvpeBtn, isRmvpe);
         SetSegmentedToggle(F0FcpeBtn, !isRmvpe);
-        _ = ApplyServerSettingsAsync();
+        _f0Method = isRmvpe ? "rmvpe" : "fcpe";
+        ScheduleRealtimeConfigSend();
     }
 
     private void BufferMode_OnClick(object? sender, RoutedEventArgs e)
@@ -1906,10 +1942,19 @@ public partial class MainWindow : Window
         GlobalStatusTextBlock.Text = isConnected ? "已连接" : "未连接";
         if (!isConnected)
         {
+            if (_isPlaying && !_bypassServerVoice)
+            {
+                StopStreaming();
+            }
             _realtimeConfigDebounceTimer?.Stop();
             Interlocked.Exchange(ref _realtimeConfigDebouncePending, 0);
             _lastSentConfig.Clear();
             _lastSentConfigSeq = 0;
+            _uploadReadyTcs?.TrySetCanceled();
+            _uploadDoneTcs?.TrySetCanceled();
+            _uploadReadyTcs = null;
+            _uploadDoneTcs = null;
+            _uploadOffsetCorrections.Clear();
             _effectiveServerBlockMs = 0;
             Interlocked.Exchange(ref _pendingLatencyReset, 0);
             SetModelState(ModelState.NotReady);
@@ -1934,8 +1979,9 @@ public partial class MainWindow : Window
                 if (root.TryGetProperty("client_ts", out var clientTsElement))
                 {
                     var clientTs = clientTsElement.GetInt64();
-                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    NetworkLatencyTextBlock.Text = $"{now - clientTs} ms";
+                    var now = Stopwatch.GetTimestamp();
+                    var rttMs = Math.Max(0.0, (now - clientTs) * 1000.0 / Stopwatch.Frequency);
+                    NetworkLatencyTextBlock.Text = $"{rttMs:F0} ms";
                 }
 
                 return;
@@ -2088,12 +2134,21 @@ public partial class MainWindow : Window
                     ApplySlotsFromServer(root.GetProperty("slots"));
                     break;
                 case "model_slot_updated":
-                    if (ApplySingleSlotFromServer(root.GetProperty("slot").GetString() ?? string.Empty, root.GetProperty("state")))
+                {
+                    var changedSlot = root.GetProperty("slot").GetString() ?? string.Empty;
+                    if (ApplySingleSlotFromServer(changedSlot, root.GetProperty("state")))
                     {
                         RecomputeBoundFiles();
                         RefreshServerFilesView();
+                        if (_client.IsConnected && !_bypassServerVoice
+                            && (string.Equals(changedSlot, "hubert_base", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(changedSlot, "rmvpe", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            _ = SendConfigurationAsync(true);
+                        }
                     }
                     break;
+                }
                 case "files_renamed":
                     Log($"文件已改名: {root.GetProperty("old_name").GetString() ?? string.Empty} -> {root.GetProperty("new_name").GetString() ?? string.Empty}");
                     _ = _client.SendCommandAsync(new { command = "files_list" });
@@ -2280,6 +2335,51 @@ public partial class MainWindow : Window
             : !string.IsNullOrEmpty(activeId) ? activeId
             : VoiceModelItem.RawId;
         _selectedVoiceModelId = resolvedId;
+
+        bool resolvedBypass = string.Equals(resolvedId, VoiceModelItem.RawId, StringComparison.Ordinal);
+        if (_isPlaying && _bypassServerVoice != resolvedBypass)
+        {
+            StopStreaming();
+        }
+
+        bool runtimeSelectionChanged = false;
+        if (resolvedBypass)
+        {
+            runtimeSelectionChanged = !_bypassServerVoice || _serverPassthroughVoice
+                || !string.IsNullOrEmpty(_modelPath) || !string.IsNullOrEmpty(_indexPath);
+            _bypassServerVoice = true;
+            _serverPassthroughVoice = false;
+            _modelPath = string.Empty;
+            _indexPath = string.Empty;
+        }
+        else if (string.Equals(resolvedId, VoiceModelItem.ServerRawId, StringComparison.Ordinal))
+        {
+            runtimeSelectionChanged = _bypassServerVoice || !_serverPassthroughVoice
+                || !string.IsNullOrEmpty(_modelPath) || !string.IsNullOrEmpty(_indexPath);
+            _bypassServerVoice = false;
+            _serverPassthroughVoice = true;
+            _modelPath = string.Empty;
+            _indexPath = string.Empty;
+        }
+        else
+        {
+            var selectedRuntimeModel = list.FirstOrDefault(item => string.Equals(item.Id, resolvedId, StringComparison.Ordinal));
+            if (selectedRuntimeModel != null)
+            {
+                runtimeSelectionChanged = _bypassServerVoice || _serverPassthroughVoice
+                    || !string.Equals(_modelPath, selectedRuntimeModel.Pth, StringComparison.Ordinal)
+                    || !string.Equals(_indexPath, selectedRuntimeModel.Index, StringComparison.Ordinal);
+                _bypassServerVoice = false;
+                _serverPassthroughVoice = false;
+                _modelPath = selectedRuntimeModel.Pth;
+                _indexPath = selectedRuntimeModel.Index;
+            }
+        }
+
+        if (runtimeSelectionChanged && _client.IsConnected && !_bypassServerVoice)
+        {
+            _ = SendConfigurationAsync(true);
+        }
 
         // Only clear switch rollback marker after server confirms target became active.
         if (!string.IsNullOrEmpty(_prevSelectedVoiceModelId)
@@ -2712,6 +2812,19 @@ public partial class MainWindow : Window
             _uploadingFiles.RemoveAll(item => ReferenceEquals(item, uploadItem));
             await _client.SendCommandAsync(new { command = "files_list" });
         }
+        catch (OperationCanceledException)
+        {
+            Log("上传已取消：连接已断开。");
+            _uploadReadyTcs = null;
+            _uploadDoneTcs = null;
+        }
+        catch (Exception ex)
+        {
+            Log($"上传失败: {ex.Message}");
+            ShowErrorToast("上传失败");
+            _uploadReadyTcs = null;
+            _uploadDoneTcs = null;
+        }
         finally
         {
             _uploadSerialLock.Release();
@@ -2949,7 +3062,6 @@ public partial class MainWindow : Window
             "block_time",
             "crossfade_length",
             "extra_time",
-            "stream_chunk_ms",
             "formant_shift",
             "f0method",
             "index_rate",
@@ -3021,7 +3133,6 @@ public partial class MainWindow : Window
             { "block_time", _blockTime },
             { "crossfade_length", _crossfadeLength },
             { "extra_time", _extraTime },
-            { "stream_chunk_ms", _serverStreamChunkMs },
             { "formant_shift", _formantShift },
             { "f0method", _f0Method },
             { "index_rate", indexRate },
@@ -3085,12 +3196,14 @@ public partial class MainWindow : Window
         _jitterEstimator.Reset();
         _emaTotalLatencyMs = 0;
         _emaInferLatencyMs = 0;
-        _emaQueueLatencyMs = 0;
+        _emaServerQueueLatencyMs = 0;
         _hasLatencyEstimate = false;
+        _hasOutputSequence = false;
+        _lastOutputSequence = 0;
         _latencySamples.Clear();
     }
 
-    private void StartStreaming()
+    private async Task StartStreamingAsync()
     {
         if (_isPlaying)
         {
@@ -3103,10 +3216,17 @@ public partial class MainWindow : Window
         }
 
         _streamStartNs = GetMonoNs();
-        _nextCaptureAudioTsNs = 0;
-        _streamSessionId = unchecked(_streamSessionId + 1);
+        _captureMediaCursorNs = 0;
+        Interlocked.Exchange(ref _audioSequence, 0);
+        long sessionLong = Interlocked.Increment(ref _streamSessionId);
+        ulong sessionId = unchecked((ulong)sessionLong);
         Interlocked.Exchange(ref _pendingLatencyReset, 0);
         ResetLatencyTracking();
+
+        if (!_bypassServerVoice)
+        {
+            await _client.SendCommandAsync(new { command = "stream_start", session_id = sessionId, protocol = 2 });
+        }
 
         _waveProvider = new BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels))
         {
@@ -3124,18 +3244,18 @@ public partial class MainWindow : Window
             {
                 using var enumerator = new MMDeviceEnumerator();
                 _outputDevice = enumerator.GetDevice(selectedOutput.Id);
-                _waveOut = new WasapiOut(_outputDevice, AudioClientShareMode.Shared, false, 80);
+                _waveOut = new WasapiOut(_outputDevice, AudioClientShareMode.Shared, true, 30);
             }
             catch
             {
                 _outputDevice?.Dispose();
                 _outputDevice = null;
-                _waveOut = new WasapiOut(AudioClientShareMode.Shared, 80);
+                _waveOut = new WasapiOut(AudioClientShareMode.Shared, 30);
             }
         }
         else
         {
-            _waveOut = new WasapiOut(AudioClientShareMode.Shared, 80);
+            _waveOut = new WasapiOut(AudioClientShareMode.Shared, 30);
         }
 
         _waveOut.PlaybackStopped += OnPlaybackStopped;
@@ -3164,7 +3284,7 @@ public partial class MainWindow : Window
 
         inputDevice ??= TryGetDefaultCapture(inputEnumerator, Role.Communications);
         inputDevice ??= TryGetDefaultCapture(inputEnumerator, Role.Multimedia);
-        _waveIn = inputDevice != null ? new WasapiCapture(inputDevice) : new WasapiCapture();
+        _waveIn = inputDevice != null ? new WasapiCapture(inputDevice, true, 30) : new WasapiCapture();
         _waveIn.DataAvailable += OnAudioDataAvailable;
 
         var sourceFormat = _waveIn.WaveFormat;
@@ -3190,16 +3310,24 @@ public partial class MainWindow : Window
         samples = new WdlResamplingSampleProvider(samples, SampleRate);
         _captureProvider = new SampleToWaveProvider(samples);
 
-        int chunkBytes = (int)(SampleRate * (_networkSliceMs / 1000.0) * 4);
-        if (chunkBytes < 4)
-        {
-            chunkBytes = 4;
-        }
-
-        _captureReadBuffer = new byte[chunkBytes];
+        UpdateCaptureReadBufferSize();
+        Interlocked.Exchange(ref _captureActive, 1);
         _waveIn.StartRecording();
 
         Log(_bypassServerVoice ? "音频录制已开始 - 原声输出中" : _serverPassthroughVoice ? "音频录制已开始 - 原声经服务器输出中" : "音频录制已开始 - 变声进行中");
+    }
+
+    private void UpdateCaptureReadBufferSize()
+    {
+        int blockMs = Math.Max(10, (int)Math.Round(_blockTime * 1000.0));
+        int effectiveSliceMs = Math.Max(10, Math.Min(_networkSliceMs, blockMs));
+        int chunkBytes = Math.Max(4, SampleRate * effectiveSliceMs * 4 / 1000);
+        chunkBytes -= chunkBytes % 4;
+        lock (_captureLock)
+        {
+            if (_captureReadBuffer.Length != chunkBytes)
+                _captureReadBuffer = new byte[chunkBytes];
+        }
     }
 
     private void StartWaveformTimer()
@@ -3565,10 +3693,19 @@ public partial class MainWindow : Window
             // Keep the timer and timestamp histories so the shared window scrolls away naturally after stopping.
             // Histories are reset on the next StartStreaming call.
 
-            StopAudioSendLoop();
-            _nextCaptureAudioTsNs = 0;
+            Interlocked.Exchange(ref _captureActive, 0);
+            long endingSession = Interlocked.Read(ref _streamSessionId);
+            if (!_bypassServerVoice && _client.IsConnected && endingSession > 0)
+            {
+                _ = _client.SendCommandAsync(new { command = "stream_stop", session_id = unchecked((ulong)endingSession) });
+            }
+            lock (_captureLock)
+            {
+                StopAudioSendLoop();
+                _captureMediaCursorNs = 0;
+            }
             _streamStartNs = 0;
-            _streamSessionId = unchecked(_streamSessionId + 1);
+            Interlocked.Increment(ref _streamSessionId);
 
             if (_waveIn != null)
             {
@@ -3597,6 +3734,7 @@ public partial class MainWindow : Window
             _playbackStarted = false;
             UpdateStreamingUi(false);
             TotalLatencyTextBlock.Text = "-- ms";
+            ServerQueueLatencyTextBlock.Text = "-- ms";
             InferenceLatencyTextBlock.Text = "-- ms";
             Log("音频流已停止");
         }
@@ -3608,7 +3746,8 @@ public partial class MainWindow : Window
 
     private void StartAudioSendLoop()
     {
-        if (_audioSendLoopTask != null && !_audioSendLoopTask.IsCompleted)
+        if (_audioSendLoopTask != null && !_audioSendLoopTask.IsCompleted
+            && _streamingCts is { IsCancellationRequested: false })
         {
             return;
         }
@@ -3616,14 +3755,20 @@ public partial class MainWindow : Window
         _streamingCts?.Cancel();
         _streamingCts?.Dispose();
         _streamingCts = new CancellationTokenSource();
-        _audioSendLoopTask = Task.Run(() => AudioSendLoopAsync(_streamingCts.Token), _streamingCts.Token);
+        var token = _streamingCts.Token;
+        var signal = new SemaphoreSlim(0);
+        _audioSendSignal = signal;
+        _audioSendLoopTask = Task.Run(() => AudioSendLoopAsync(signal, token), token);
     }
 
     private void StopAudioSendLoop()
     {
-        _streamingCts?.Cancel();
-        _streamingCts?.Dispose();
+        var cts = _streamingCts;
         _streamingCts = null;
+        _audioSendSignal = null;
+        cts?.Cancel();
+        cts?.Dispose();
+        _audioSendLoopTask = null;
 
         while (_audioSendQueue.TryDequeue(out _))
         {
@@ -3632,18 +3777,19 @@ public partial class MainWindow : Window
         Interlocked.Exchange(ref _audioSendQueueCount, 0);
     }
 
-    private async Task AudioSendLoopAsync(CancellationToken cancellationToken)
+    private async Task AudioSendLoopAsync(SemaphoreSlim signal, CancellationToken cancellationToken)
     {
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await _audioSendSignal.WaitAsync(cancellationToken);
+                await signal.WaitAsync(cancellationToken);
 
-                while (_audioSendQueue.TryDequeue(out var messageBytes))
+                while (!cancellationToken.IsCancellationRequested
+                    && _audioSendQueue.TryDequeue(out var messageBytes))
                 {
                     Interlocked.Decrement(ref _audioSendQueueCount);
-                    await _client.SendBinaryAsync(messageBytes, cancellationToken);
+                    await _client.SendAudioAsync(messageBytes, cancellationToken);
                 }
             }
         }
@@ -3654,28 +3800,47 @@ public partial class MainWindow : Window
         {
             Log($"音频发送循环错误: {ex.Message}");
         }
+        finally
+        {
+            signal.Dispose();
+        }
     }
 
-    private long GetNextCaptureTimestampNs(int sampleCount)
+    private void ResyncCaptureTimelineForCallback(int bytesRecorded)
+    {
+        var captureBuffer = _captureBuffer;
+        if (captureBuffer == null || bytesRecorded <= 0) return;
+
+        var format = captureBuffer.WaveFormat;
+        int sourceFrames = format.BlockAlign > 0 ? bytesRecorded / format.BlockAlign : 0;
+        if (sourceFrames <= 0 || format.SampleRate <= 0) return;
+
+        long incomingDurationNs = (long)Math.Round(sourceFrames * 1_000_000_000.0 / format.SampleRate);
+        long queuedDurationNs = (long)Math.Round(captureBuffer.BufferedDuration.TotalMilliseconds * 1_000_000.0);
+        long observedOldestNs = GetMonoNs() - incomingDurationNs - queuedDurationNs;
+        long cursor = Interlocked.Read(ref _captureMediaCursorNs);
+        if (cursor <= 0 || Math.Abs(observedOldestNs - cursor) > CaptureTimestampResyncThresholdNs)
+        {
+            Interlocked.Exchange(ref _captureMediaCursorNs, observedOldestNs);
+        }
+    }
+
+    private long TakeCaptureTimestampNs(int sampleCount)
     {
         long durationNs = sampleCount * NsPerSample;
-        long observedStartNs = GetMonoNs() - durationNs;
-        long expectedStartNs = Interlocked.Read(ref _nextCaptureAudioTsNs);
-
-        long startTimestampNs = expectedStartNs;
-        if (expectedStartNs <= 0
-            || Math.Abs(observedStartNs - expectedStartNs) > CaptureTimestampResyncThresholdNs)
+        long start = Interlocked.Read(ref _captureMediaCursorNs);
+        if (start <= 0)
         {
-            startTimestampNs = observedStartNs;
+            start = GetMonoNs() - durationNs;
+            Interlocked.Exchange(ref _captureMediaCursorNs, start);
         }
-
-        Interlocked.Exchange(ref _nextCaptureAudioTsNs, startTimestampNs + durationNs);
-        return startTimestampNs;
+        Interlocked.Add(ref _captureMediaCursorNs, durationNs);
+        return start;
     }
 
     private void OnAudioDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (e.BytesRecorded == 0)
+        if (e.BytesRecorded == 0 || Volatile.Read(ref _captureActive) == 0)
         {
             return;
         }
@@ -3689,6 +3854,9 @@ public partial class MainWindow : Window
 
             lock (_captureLock)
             {
+                if (Volatile.Read(ref _captureActive) == 0)
+                    return;
+                ResyncCaptureTimelineForCallback(e.BytesRecorded);
                 _captureBuffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
 
                 while (true)
@@ -3718,7 +3886,7 @@ public partial class MainWindow : Window
                         }
 
                         // Input uses fixed media-time buckets; output is committed only when the device reads it.
-                        long waveformStartNs = GetNextCaptureTimestampNs(alignedRead / 4);
+                        long waveformStartNs = TakeCaptureTimestampNs(alignedRead / 4);
                         AppendInputSourceSamples(_waveformInputSourceHistory, _waveformInputAccumulator, _waveformInputSourceLock, _captureReadBuffer, 0, alignedRead, waveformStartNs);
                         AddPlaybackSamples(_captureReadBuffer, 0, alignedRead, waveformStartNs);
 
@@ -3750,28 +3918,33 @@ public partial class MainWindow : Window
                         continue;
                     }
 
-                    long tsNs = GetNextCaptureTimestampNs(alignedRead / 4);
+                    long tsNs = TakeCaptureTimestampNs(alignedRead / 4);
 
-                    var messageBytes = new byte[8 + alignedRead];
-                    var tsBytes = BitConverter.GetBytes((ulong)tsNs);
-                    if (BitConverter.IsLittleEndian)
+                    long sessionLong = Interlocked.Read(ref _streamSessionId);
+                    if (sessionLong <= 0)
                     {
-                        Array.Reverse(tsBytes);
+                        continue;
                     }
-
-                    Array.Copy(tsBytes, 0, messageBytes, 0, 8);
-                    Array.Copy(_captureReadBuffer, 0, messageBytes, 8, alignedRead);
+                    uint sequence = unchecked((uint)(Interlocked.Increment(ref _audioSequence) - 1));
+                    var messageBytes = AudioProtocol.BuildInputFrame(
+                        unchecked((ulong)sessionLong), sequence, unchecked((ulong)tsNs), 0,
+                        _captureReadBuffer, alignedRead);
                     AppendInputSourceSamples(_waveformInputSourceHistory, _waveformInputAccumulator, _waveformInputSourceLock, _captureReadBuffer, 0, alignedRead, tsNs);
 
+
+                    if (Volatile.Read(ref _captureActive) == 0)
+                        return;
 
                     _audioSendQueue.Enqueue(messageBytes);
                     var currentCount = Interlocked.Increment(ref _audioSendQueueCount);
                     var dropped = false;
-                    while (currentCount > _maxAudioSendQueuePackets && _audioSendQueue.TryDequeue(out _))
+                    while (Volatile.Read(ref _audioSendQueueCount) > _maxAudioSendQueuePackets
+                        && _audioSendQueue.TryDequeue(out _))
                     {
-                        currentCount = Interlocked.Decrement(ref _audioSendQueueCount);
+                        Interlocked.Decrement(ref _audioSendQueueCount);
                         dropped = true;
                     }
+                    currentCount = Volatile.Read(ref _audioSendQueueCount);
                     if (dropped)
                     {
                         var now = GetMonoNs();
@@ -3782,7 +3955,10 @@ public partial class MainWindow : Window
                         }
                     }
 
-                    _audioSendSignal.Release();
+                    if (currentCount == 1)
+                    {
+                        _audioSendSignal?.Release();
+                    }
 
                     if (read < _captureReadBuffer.Length)
                     {
@@ -3805,93 +3981,124 @@ public partial class MainWindow : Window
         }
     }
 
+    private void TrimPlaybackBufferTo(int targetMs)
+    {
+        var provider = _waveProvider;
+        if (provider == null) return;
+        int targetBytes = Math.Max(0, targetMs) * SampleRate * 4 / 1000;
+
+        lock (_playbackTimestampSync)
+        {
+            int bytesToDrop = Math.Max(0, provider.BufferedBytes - targetBytes);
+            bytesToDrop -= bytesToDrop % 4;
+            if (bytesToDrop <= 0) return;
+
+            var scratch = new byte[Math.Min(bytesToDrop, 64 * 1024)];
+            int remainingBytes = bytesToDrop;
+            int droppedSamples = 0;
+            while (remainingBytes > 0)
+            {
+                int request = Math.Min(remainingBytes, scratch.Length);
+                int read = provider.Read(scratch, 0, request);
+                if (read <= 0) break;
+                int mediaBytes = Math.Min(read, request);
+                droppedSamples += mediaBytes / 4;
+                remainingBytes -= mediaBytes;
+            }
+
+            int remainingSamples = droppedSamples;
+            while (remainingSamples > 0 && _playbackTimestampSegments.Count > 0)
+            {
+                var segment = _playbackTimestampSegments.Peek();
+                int take = Math.Min(remainingSamples, segment.RemainingSamples);
+                segment.NextTimestampNs += take * NsPerSample;
+                segment.RemainingSamples -= take;
+                remainingSamples -= take;
+                if (segment.RemainingSamples == 0)
+                    _playbackTimestampSegments.Dequeue();
+            }
+
+            _playbackExpectedTimestampNs = _playbackTimestampSegments.Count > 0
+                ? _playbackTimestampSegments.Peek().NextTimestampNs
+                : 0;
+        }
+    }
+
     private void HandleBinaryMessage(byte[] messageData)
     {
-        if (!_isPlaying || _waveProvider == null)
-        {
-            return;
-        }
+        if (!_isPlaying || _waveProvider == null) return;
 
         try
         {
-            const int headerBytes = 12;
-            if (messageData.Length < headerBytes)
-            {
+            if (!AudioProtocol.TryParseOutputFrame(messageData, out var header, out int audioOffset))
                 return;
-            }
 
-            var procTimeBytes = new byte[2];
-            Array.Copy(messageData, 0, procTimeBytes, 0, 2);
-            if (BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(procTimeBytes);
-            }
+            long currentSession = Interlocked.Read(ref _streamSessionId);
+            if (currentSession <= 0 || header.SessionId != unchecked((ulong)currentSession))
+                return;
 
-            var procTimeMs = BitConverter.ToUInt16(procTimeBytes, 0);
+            int audioLength = messageData.Length - audioOffset;
+            if (audioLength <= 0) return;
 
-            var queueTimeBytes = new byte[2];
-            Array.Copy(messageData, 2, queueTimeBytes, 0, 2);
-            if (BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(queueTimeBytes);
-            }
-
-            var queueTimeMs = BitConverter.ToUInt16(queueTimeBytes, 0);
-
-            var tsBytes = new byte[8];
-            Array.Copy(messageData, 4, tsBytes, 0, 8);
-            if (BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(tsBytes);
-            }
-
-            ulong tsNs = BitConverter.ToUInt64(tsBytes, 0);
             long arrivalNs = GetMonoNs();
             bool hasValidMediaTimestamp = _streamStartNs > 0
-                && tsNs >= (ulong)_streamStartNs
-                && tsNs <= (ulong)long.MaxValue;
-            int audioOffset = headerBytes;
-            int audioLength = messageData.Length - audioOffset;
-            if (audioLength <= 0)
+                && header.TimestampNs >= (ulong)_streamStartNs
+                && header.TimestampNs <= (ulong)long.MaxValue;
+
+            bool sequenceGap = _hasOutputSequence
+                && header.Sequence != unchecked(_lastOutputSequence + 1);
+            bool discontinuity = sequenceGap || (header.Flags & AudioProtocol.FlagDiscontinuity) != 0;
+            _lastOutputSequence = header.Sequence;
+            _hasOutputSequence = true;
+
+            int effectiveTargetLatency = _useAdaptiveBuffer
+                ? _jitterEstimator.GetTargetBufferMs(10)
+                : _targetBufferLatency;
+
+            if (discontinuity)
             {
-                return;
+                TrimPlaybackBufferTo(0);
+                ResetLatencyTracking();
+                _lastOutputSequence = header.Sequence;
+                _hasOutputSequence = true;
             }
 
-
             double bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+            double incomingMs = audioLength / 4.0 * 1000.0 / SampleRate;
+            double hardLimitMs = Math.Min(_maxBufferMs, Math.Max(0, _bufferCapacityMs - incomingMs));
+            if (bufferBeforeAddMs > hardLimitMs
+                || bufferBeforeAddMs + incomingMs > _bufferCapacityMs)
+            {
+                // Always make room by dropping the oldest media before the provider
+                // can overflow and reject the newest realtime block.
+                int trimTargetMs = Math.Min(effectiveTargetLatency, Math.Max(0, _bufferCapacityMs / 2));
+                TrimPlaybackBufferTo(trimTargetMs);
+                bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+            }
+
             if (hasValidMediaTimestamp)
             {
                 if (Interlocked.Exchange(ref _pendingLatencyReset, 0) != 0)
-                {
                     ResetLatencyTracking();
-                }
-                _jitterEstimator.Update((long)tsNs, arrivalNs);
+                _jitterEstimator.Update((long)header.TimestampNs, arrivalNs);
+                effectiveTargetLatency = _useAdaptiveBuffer
+                    ? _jitterEstimator.GetTargetBufferMs(10)
+                    : _targetBufferLatency;
             }
 
-            bool shouldAdd = true;
-            int effectiveTargetLatency = _useAdaptiveBuffer ? _jitterEstimator.GetTargetBufferMs(10) : _targetBufferLatency;
-            if (bufferBeforeAddMs > _maxBufferMs)
-            {
-                shouldAdd = false;
-            }
-            else if (bufferBeforeAddMs > effectiveTargetLatency + _silenceDropOffset)
-            {
-                var rms = CalculateRms(messageData, audioOffset, audioLength);
-                if (rms < _silenceThreshold)
-                {
-                    shouldAdd = false;
-                }
-            }
-
-            if (!shouldAdd)
+            if (bufferBeforeAddMs > effectiveTargetLatency + _silenceDropOffset
+                && CalculateRms(messageData, audioOffset, audioLength) < _silenceThreshold)
             {
                 return;
             }
 
-            AddPlaybackSamples(messageData, audioOffset, audioLength, hasValidMediaTimestamp ? (long)tsNs : 0);
+            AddPlaybackSamples(
+                messageData, audioOffset, audioLength,
+                hasValidMediaTimestamp ? (long)header.TimestampNs : 0);
+
             if (!_playbackStarted && _waveOut != null && _waveProvider.BufferedBytes > 0)
             {
-                var minStartBufferMs = Math.Max(effectiveTargetLatency, 40);
+                var minStartBufferMs = Math.Max(effectiveTargetLatency, 30);
                 if (_waveProvider.BufferedDuration.TotalMilliseconds >= minStartBufferMs)
                 {
                     _waveOut.Play();
@@ -3902,36 +4109,40 @@ public partial class MainWindow : Window
 
             if (hasValidMediaTimestamp)
             {
-                double ageAtReceiveMs = (arrivalNs - (long)tsNs) / 1_000_000.0;
+                double ageAtReceiveMs = (arrivalNs - (long)header.TimestampNs) / 1_000_000.0;
                 double totalMsNow = ageAtReceiveMs + bufferBeforeAddMs;
+                double serverQueueMs = header.InputQueueMs + header.OutputQueueMs;
 
                 if (!_hasLatencyEstimate)
                 {
                     _emaTotalLatencyMs = totalMsNow;
-                    _emaInferLatencyMs = procTimeMs;
-                    _emaQueueLatencyMs = queueTimeMs;
+                    _emaInferLatencyMs = header.ProcessingMs;
+                    _emaServerQueueLatencyMs = serverQueueMs;
                     _hasLatencyEstimate = true;
                 }
                 else
                 {
                     _emaTotalLatencyMs = LatencyEmaAlpha * totalMsNow + (1.0 - LatencyEmaAlpha) * _emaTotalLatencyMs;
-                    _emaInferLatencyMs = LatencyEmaAlpha * procTimeMs + (1.0 - LatencyEmaAlpha) * _emaInferLatencyMs;
-                    _emaQueueLatencyMs = LatencyEmaAlpha * queueTimeMs + (1.0 - LatencyEmaAlpha) * _emaQueueLatencyMs;
+                    _emaInferLatencyMs = LatencyEmaAlpha * header.ProcessingMs + (1.0 - LatencyEmaAlpha) * _emaInferLatencyMs;
+                    _emaServerQueueLatencyMs = LatencyEmaAlpha * serverQueueMs + (1.0 - LatencyEmaAlpha) * _emaServerQueueLatencyMs;
                 }
 
-                _latencySamples.Add(new LatencySample { TsNs = GetMonoNs(), TotalMs = totalMsNow, RttMs = queueTimeMs, InferMs = procTimeMs });
-
-                long cutoff = GetMonoNs() - (long)(LatencySampleWindowSeconds * 1_000_000_000.0);
-                while (_latencySamples.Count > 0 && _latencySamples[0].TsNs < cutoff)
+                _latencySamples.Add(new LatencySample
                 {
+                    TsNs = arrivalNs,
+                    TotalMs = totalMsNow,
+                    ServerQueueMs = serverQueueMs,
+                    InferMs = header.ProcessingMs,
+                });
+                long cutoff = arrivalNs - (long)(LatencySampleWindowSeconds * 1_000_000_000.0);
+                while (_latencySamples.Count > 0 && _latencySamples[0].TsNs < cutoff)
                     _latencySamples.RemoveAt(0);
-                }
 
                 Dispatcher.UIThread.Post(() =>
                 {
                     TotalLatencyTextBlock.Text = $"{_emaTotalLatencyMs:F0} ms";
+                    ServerQueueLatencyTextBlock.Text = $"{_emaServerQueueLatencyMs:F0} ms";
                     InferenceLatencyTextBlock.Text = $"{_emaInferLatencyMs:F0} ms";
-                    NetworkLatencyTextBlock.Text = $"{_emaQueueLatencyMs:F0} ms";
                 });
             }
         }
