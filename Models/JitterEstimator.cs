@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 
 namespace ClientAvalonia.Models;
 
@@ -8,94 +7,87 @@ public class JitterEstimator
     public double Alpha { get; set; } = 0.90;
     public double JitterFactor { get; set; } = 1.5;
     public double MinBufferMs { get; set; } = 20.0;
-    public double BlockTimeMs { get; set; }
     public double MaxBufferMs { get; set; } = 350.0;
 
-    // Peak IAT half-life: how quickly the tracked peak decays (seconds)
+    // How quickly a previously observed late packet stops inflating the buffer.
     private const double PeakHalfLifeSeconds = 3.0;
 
-    private double _avgIat;
-    private double _varIat;
-    private long _lastReceiveTick;
-    private double _peakIatMs;
-    private long _peakLastUpdateTick;
+    private long _baseMediaTimestampNs;
+    private long _baseArrivalTimestampNs;
+    private long _lastArrivalTimestampNs;
+    private double _avgLatenessMs;
+    private double _varLatenessMs;
+    private double _peakLatenessMs;
+    private bool _hasStatistics;
 
     public double EstimatedJitterMs { get; private set; }
 
-    public void Update()
+    public void Update(long mediaTimestampNs, long arrivalTimestampNs)
     {
-        long currentTick = Stopwatch.GetTimestamp();
-
-        if (_lastReceiveTick == 0)
-        {
-            _lastReceiveTick = currentTick;
-            _peakLastUpdateTick = currentTick;
-            return;
-        }
-
-        double deltaTicks = currentTick - _lastReceiveTick;
-        double currentIatMs = deltaTicks / Stopwatch.Frequency * 1000.0;
-        _lastReceiveTick = currentTick;
-
-        // Filter only extreme outliers (< 2ms means same-burst packet, > 500ms means disconnection)
-        if (currentIatMs < 2)
+        if (mediaTimestampNs <= 0 || arrivalTimestampNs <= 0)
         {
             return;
         }
 
-        if (currentIatMs > 500)
+        if (_baseMediaTimestampNs == 0
+            || mediaTimestampNs < _baseMediaTimestampNs
+            || arrivalTimestampNs < _baseArrivalTimestampNs)
         {
+            _baseMediaTimestampNs = mediaTimestampNs;
+            _baseArrivalTimestampNs = arrivalTimestampNs;
+            _lastArrivalTimestampNs = arrivalTimestampNs;
             return;
         }
 
-        // Decay peak IAT based on elapsed time since last peak update
-        if (_peakIatMs > 0)
+        double mediaElapsedMs = (mediaTimestampNs - _baseMediaTimestampNs) / 1_000_000.0;
+        double arrivalElapsedMs = (arrivalTimestampNs - _baseArrivalTimestampNs) / 1_000_000.0;
+
+        // The server emits each inference block as a burst of smaller packets.
+        // Raw packet IAT therefore contains the normal block interval (for example
+        // 250 ms) and is not network jitter. Comparing arrival progress with the
+        // media timestamp makes packets inside a burst early; only packets that
+        // fall behind the media clock contribute to the protection buffer.
+        double latenessMs = Math.Max(0.0, arrivalElapsedMs - mediaElapsedMs);
+
+        if (_lastArrivalTimestampNs > 0 && _peakLatenessMs > 0)
         {
-            double deltaSeconds = (currentTick - _peakLastUpdateTick) / Stopwatch.Frequency;
+            double deltaSeconds = (arrivalTimestampNs - _lastArrivalTimestampNs) / 1_000_000_000.0;
             double decayFactor = Math.Pow(0.5, deltaSeconds / PeakHalfLifeSeconds);
-            _peakIatMs *= decayFactor;
-            if (_peakIatMs < _avgIat + 5)
-            {
-                _peakIatMs = _avgIat + 5;
-            }
+            _peakLatenessMs *= decayFactor;
         }
-        _peakLastUpdateTick = currentTick;
+        _lastArrivalTimestampNs = arrivalTimestampNs;
 
-        // Update peak if current IAT exceeds it
-        if (currentIatMs > _peakIatMs)
+        if (latenessMs > _peakLatenessMs)
         {
-            _peakIatMs = currentIatMs;
+            _peakLatenessMs = latenessMs;
         }
 
-        // EMA for average IAT
-        if (_avgIat == 0)
+        if (!_hasStatistics)
         {
-            _avgIat = currentIatMs;
+            _avgLatenessMs = latenessMs;
+            _varLatenessMs = 0;
+            _hasStatistics = true;
         }
-
-        _avgIat = Alpha * _avgIat + (1 - Alpha) * currentIatMs;
-
-        double deviation = Math.Abs(currentIatMs - _avgIat);
-        if (_varIat == 0)
+        else
         {
-            _varIat = deviation;
+            _avgLatenessMs = Alpha * _avgLatenessMs + (1 - Alpha) * latenessMs;
+            double deviation = Math.Abs(latenessMs - _avgLatenessMs);
+            _varLatenessMs = Alpha * _varLatenessMs + (1 - Alpha) * deviation;
         }
 
-        _varIat = Alpha * _varIat + (1 - Alpha) * deviation;
-
-        // Jitter estimate: use peak IAT directly as the required buffer depth.
-        // When all packets arrive consistently at inter-burst interval (e.g. 250ms),
-        // EMA deviation is near zero, but we still need a buffer ≥ peak IAT.
-        EstimatedJitterMs = _peakIatMs;
+        EstimatedJitterMs = Math.Max(
+            _peakLatenessMs,
+            _avgLatenessMs + JitterFactor * _varLatenessMs);
 
         if (EstimatedJitterMs < 5)
         {
             EstimatedJitterMs = 5;
         }
 
-        if (EstimatedJitterMs > MaxBufferMs)
+        double effectiveMaxBufferMs = Math.Max(MaxBufferMs, MinBufferMs);
+        if (EstimatedJitterMs > effectiveMaxBufferMs)
         {
-            EstimatedJitterMs = MaxBufferMs;
+            EstimatedJitterMs = effectiveMaxBufferMs;
         }
     }
 
@@ -108,31 +100,24 @@ public class JitterEstimator
             target = MinBufferMs;
         }
 
-        if (target < BlockTimeMs + 50)
+        double effectiveMaxBufferMs = Math.Max(MaxBufferMs, MinBufferMs);
+        if (target > effectiveMaxBufferMs)
         {
-            target = BlockTimeMs + 50;
+            target = effectiveMaxBufferMs;
         }
 
-        if (target > MaxBufferMs)
-        {
-            target = MaxBufferMs;
-        }
-
-        if (BlockTimeMs > 0 && target < BlockTimeMs)
-        {
-            target = BlockTimeMs + 10;
-        }
-
-        return (int)target;
+        return (int)Math.Ceiling(target);
     }
 
     public void Reset()
     {
-        _avgIat = 0;
-        _varIat = 0;
-        _lastReceiveTick = 0;
-        _peakIatMs = 0;
-        _peakLastUpdateTick = 0;
+        _baseMediaTimestampNs = 0;
+        _baseArrivalTimestampNs = 0;
+        _lastArrivalTimestampNs = 0;
+        _avgLatenessMs = 0;
+        _varLatenessMs = 0;
+        _hasStatistics = false;
+        _peakLatenessMs = 0;
         EstimatedJitterMs = 0;
     }
 }

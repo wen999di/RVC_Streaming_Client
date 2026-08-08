@@ -1,4 +1,4 @@
-<Application xmlns="https://github.com/avaloniaui"
+﻿<Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:ClientAvalonia"
              xmlns:mi="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
@@ -12,6 +12,9 @@
     <local:Oklch x:Key="SurfaceRaisedBrush" L="0.994" C="0.004" H="82" />
     <local:Oklch x:Key="SurfaceWarmBrush"   L="0.958" C="0.015" H="78" />
     <local:Oklch x:Key="SurfaceTintBrush"   L="0.950" C="0.018" H="198" />
+    <!-- Tab interaction surfaces stay in the warm-neutral family; teal remains an accent only. -->
+    <local:Oklch x:Key="MainTabHoverBrush"   L="0.962" C="0.012" H="82" />
+    <local:Oklch x:Key="MainTabPressedBrush" L="0.946" C="0.016" H="82" />
 
     <!-- Glass (H=198, accent tint, deepened for visibility) -->
     <local:Oklch x:Key="GlassBrush"         L="0.952" C="0.028" H="198" />
@@ -28,7 +31,7 @@
 
     <!-- Accent (H=198 constant, professional teal) -->
     <local:Oklch x:Key="AccentBrush"        L="0.500" C="0.100" H="198" />
-    <local:Oklch x:Key="AccentHoverBrush"   L="0.545" C="0.088" H="198" />
+    <local:Oklch x:Key="AccentHoverBrush"   L="0.455" C="0.095" H="198" />
     <local:Oklch x:Key="AccentSoftBrush"    L="0.920" C="0.040" H="198" />
     <local:Oklch x:Key="AccentTextBrush"    L="0.400" C="0.085" H="198" />
 
@@ -41,6 +44,9 @@
     <local:Oklch x:Key="StatusWarmBrush"    L="0.520" C="0.100" H="55" />
     <local:Oklch x:Key="DangerSoftBrush"    L="0.940" C="0.022" H="22" />
     <local:Oklch x:Key="DangerBrush"        L="0.600" C="0.145" H="22" />
+    <local:Oklch x:Key="DangerActionHoverBrush" L="0.905" C="0.045" H="22" />
+    <!-- Opaque drag surfaces avoid non-monotonic alpha interpolation during transitions. -->
+    <local:Oklch x:Key="DragValidSoftBrush" L="0.940" C="0.028" H="245" />
     <!-- Close button: same hue (H=22) so sRGB interpolation stays within red family -->
     <local:Oklch x:Key="CloseHoverBrush"    L="0.555" C="0.210" H="22" />
     <local:Oklch x:Key="ClosePressedBrush"  L="0.455" C="0.200" H="22" />
@@ -112,14 +118,22 @@
       <Setter Property="Opacity" Value="0.985" />
     </Style>
     <Style Selector="Border.section-card.drag-valid">
-      <Setter Property="Background" Value="#142196F3" />
+      <Setter Property="Background" Value="{StaticResource DragValidSoftBrush}" />
       <Setter Property="BorderBrush" Value="#2196F3" />
     </Style>
     <Style Selector="Border.section-card.drag-invalid">
-      <Setter Property="Background" Value="#18E53935" />
+      <Setter Property="Background" Value="{StaticResource DangerSoftBrush}" />
       <Setter Property="BorderBrush" Value="#E53935" />
     </Style>
     <!-- Inline drop zone drag feedback (InlinePthDropBorder / InlineIndexDropBorder) -->
+    <Style Selector="Border.inline-drop">
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.13" />
+          <BrushTransition Property="BorderBrush" Duration="0:0:0.13" />
+        </Transitions>
+      </Setter>
+    </Style>
     <Style Selector="Border.inline-drop.drag-valid">
       <Setter Property="BorderBrush" Value="#2196F3" />
     </Style>
@@ -350,16 +364,17 @@
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="Transitions">
         <Transitions>
-          <BrushTransition Property="Background" Duration="0:0:0.12" />
-          <BrushTransition Property="BorderBrush" Duration="0:0:0.12" />
-          <BrushTransition Property="Foreground" Duration="0:0:0.12" />
+          <BrushTransition Property="Background" Duration="0:0:0.16" />
+          <BrushTransition Property="BorderBrush" Duration="0:0:0.16" />
+          <BrushTransition Property="Foreground" Duration="0:0:0.16" />
           <DoubleTransition Property="Opacity" Duration="0:0:0.12" />
         </Transitions>
       </Setter>
     </Style>
-    <Style Selector="Button.primary-action.hover">
+    <Style Selector="Button.primary-action:pointerover, Button.primary-action.hover">
       <Setter Property="Background" Value="{StaticResource AccentHoverBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource AccentHoverBrush}" />
+      <Setter Property="Foreground" Value="White" />
     </Style>
     <Style Selector="Button.primary-action:pressed">
       <Setter Property="Opacity" Value="0.88" />
@@ -376,18 +391,63 @@
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="Transitions">
         <Transitions>
-          <BrushTransition Property="Background" Duration="0:0:0.12" />
-          <BrushTransition Property="BorderBrush" Duration="0:0:0.12" />
-          <BrushTransition Property="Foreground" Duration="0:0:0.12" />
+          <BrushTransition Property="Background" Duration="0:0:0.14" />
+          <BrushTransition Property="BorderBrush" Duration="0:0:0.14" />
+          <BrushTransition Property="Foreground" Duration="0:0:0.14" />
           <DoubleTransition Property="Opacity" Duration="0:0:0.12" />
         </Transitions>
       </Setter>
     </Style>
-    <Style Selector="Button.secondary-action.hover">
+    <Style Selector="Button.secondary-action:pointerover, Button.secondary-action.hover">
       <Setter Property="Background" Value="{StaticResource SecondaryHoverBrush}" />
     </Style>
     <Style Selector="Button.secondary-action:pressed">
       <Setter Property="Opacity" Value="0.88" />
+    </Style>
+
+    <Style Selector="Button.primary-action, Button.secondary-action">
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Padding="{TemplateBinding Padding}"
+                  ClipToBounds="True">
+            <TextBlock Text="{TemplateBinding Content}"
+                       Foreground="{TemplateBinding Foreground}"
+                       FontSize="{TemplateBinding FontSize}"
+                       FontWeight="{TemplateBinding FontWeight}"
+                       HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                       VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                       TextAlignment="Center"
+                       TextWrapping="NoWrap" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+    </Style>
+    <Style Selector="Button.primary-action:focus-visible">
+      <Setter Property="BorderBrush" Value="White" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
+    <Style Selector="Button.secondary-action:focus-visible">
+      <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
+    <Style Selector="Button.danger-action">
+      <Setter Property="Background" Value="{StaticResource DangerSoftBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}" />
+    </Style>
+    <Style Selector="Button.danger-action:pointerover, Button.danger-action.hover">
+      <Setter Property="Background" Value="{StaticResource DangerActionHoverBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource DangerBrush}" />
+      <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+    </Style>
+    <Style Selector="Button.danger-action:pressed">
+      <Setter Property="Opacity" Value="0.82" />
     </Style>
     <Style Selector="TextBox">
       <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
@@ -500,98 +560,72 @@
     </Style>
     <Style Selector="TabControl.main-tabs">
       <Setter Property="Padding" Value="0" />
-    </Style>
-    <Style Selector="TabControl.main-tabs /template/ TabStrip">
-      <Setter Property="Margin" Value="0,0,0,8" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="IsVisible" Value="False" />
-      <Setter Property="Height" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-    </Style>
-    <Style Selector="TabControl.main-tabs TabStrip">
-      <Setter Property="IsVisible" Value="False" />
-      <Setter Property="Height" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="Margin" Value="0" />
-      <Setter Property="Padding" Value="0" />
-    </Style>
-    <Style Selector="TabControl.main-tabs /template/ TabStrip#PART_TabStrip">
-      <Setter Property="IsVisible" Value="False" />
-      <Setter Property="Height" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="Margin" Value="0" />
-      <Setter Property="Padding" Value="0" />
-    </Style>
-    <Style Selector="TabControl.main-tabs /template/ Panel#PART_TabStripHost">
-      <Setter Property="Height" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="Margin" Value="0" />
-    </Style>
-    <Style Selector="TabControl.main-tabs /template/ TabItem">
-      <Setter Property="IsVisible" Value="False" />
-      <Setter Property="Height" Value="0" />
-      <Setter Property="MinHeight" Value="0" />
-      <Setter Property="Margin" Value="0" />
-      <Setter Property="Padding" Value="0" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}">
+            <DockPanel>
+              <!-- Keep the required items host alive so TabControl can create/select its pages,
+                   but collapse its built-in tab headers because navigation is rendered above. -->
+              <ItemsPresenter x:Name="PART_ItemsPresenter"
+                              DockPanel.Dock="{TemplateBinding TabStripPlacement}"
+                              ItemsPanel="{TemplateBinding ItemsPanel}"
+                              Height="0"
+                              MinHeight="0"
+                              MaxHeight="0"
+                              Margin="0"
+                              Opacity="0"
+                              IsHitTestVisible="False" />
+              <Panel ClipToBounds="True">
+                <ContentPresenter x:Name="PART_SelectedContentHost2"
+                                  Margin="{TemplateBinding Padding}"
+                                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                                  IsVisible="False" />
+                <ContentPresenter x:Name="PART_SelectedContentHost"
+                                  Margin="{TemplateBinding Padding}"
+                                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+              </Panel>
+            </DockPanel>
+          </Border>
+        </ControlTemplate>
+      </Setter>
     </Style>
     <Style Selector="Button.main-tab-header">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="16,6" />
-      <Setter Property="Margin" Value="0,0,4,0" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="17,8" />
+      <Setter Property="Margin" Value="0,0,6,0" />
+      <Setter Property="MinHeight" Value="40" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="FontSize" Value="16" />
       <Setter Property="FontWeight" Value="Normal" />
       <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
-      <Setter Property="CornerRadius" Value="0" />
-      <Setter Property="Transitions">
-        <Transitions>
-          <BrushTransition Property="Foreground" Duration="0:0:0.16" />
-          <DoubleTransition Property="Opacity" Duration="0:0:0.16" />
-        </Transitions>
-      </Setter>
-    </Style>
-    <Style Selector="Button.main-tab-header:pointerover">
-      <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
-      <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
-    </Style>
-    <Style Selector="Button.main-tab-header.active">
-      <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
-      <Setter Property="FontWeight" Value="Bold" />
-    </Style>
-    <Style Selector="TabItem.main-tab">
-      <Setter Property="Padding" Value="16,6" />
-      <Setter Property="Margin" Value="0,0,4,0" />
-      <Setter Property="CornerRadius" Value="0" />
-      <Setter Property="FontSize" Value="16" />
-      <Setter Property="FontWeight" Value="Normal" />
-      <Setter Property="HorizontalContentAlignment" Value="Center" />
-      <Setter Property="VerticalContentAlignment" Value="Center" />
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderBrush" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0,0,0,3" />
-      <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Cursor" Value="Hand" />
       <Setter Property="Template">
         <ControlTemplate>
-          <Border x:Name="PART_LayoutRoot"
-                  Background="{TemplateBinding Background}"
+          <Border Background="{TemplateBinding Background}"
                   BorderBrush="{TemplateBinding BorderBrush}"
                   BorderThickness="{TemplateBinding BorderThickness}"
-                  Padding="{TemplateBinding Padding}"
-                  CornerRadius="{TemplateBinding CornerRadius}">
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Padding="{TemplateBinding Padding}">
             <Border.Transitions>
               <Transitions>
-                <BrushTransition Property="Background" Duration="0:0:0.10" />
-                <BrushTransition Property="BorderBrush" Duration="0:0:0.10" />
+                <BrushTransition Property="Background" Duration="0:0:0.14" />
+                <BrushTransition Property="BorderBrush" Duration="0:0:0.14" />
               </Transitions>
             </Border.Transitions>
-            <ContentPresenter x:Name="PART_ContentPresenter"
-                              Content="{TemplateBinding Header}"
-                              ContentTemplate="{TemplateBinding HeaderTemplate}"
-                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+            <ContentPresenter Content="{TemplateBinding Content}"
+                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                              Foreground="{TemplateBinding Foreground}"
                               TextBlock.Foreground="{TemplateBinding Foreground}"
                               TextBlock.FontSize="{TemplateBinding FontSize}"
                               TextBlock.FontWeight="{TemplateBinding FontWeight}" />
@@ -599,13 +633,28 @@
         </ControlTemplate>
       </Setter>
     </Style>
-    <Style Selector="TabItem.main-tab:pointerover">
-      <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
+    <Style Selector="Button.main-tab-header:pointerover">
+      <Setter Property="Background" Value="{StaticResource MainTabHoverBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{StaticResource TextStrongBrush}" />
+    </Style>
+    <Style Selector="Button.main-tab-header.active">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
+      <Setter Property="FontWeight" Value="Bold" />
+    </Style>
+    <Style Selector="Button.main-tab-header.active:pointerover">
+      <Setter Property="Background" Value="{StaticResource MainTabHoverBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
       <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
     </Style>
-    <Style Selector="TabItem.main-tab:selected">
-      <Setter Property="FontWeight" Value="Bold" />
-      <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
+    <Style Selector="Button.main-tab-header:pressed">
+      <Setter Property="Background" Value="{StaticResource MainTabPressedBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="Button.main-tab-header:focus-visible">
       <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
     </Style>
     <Style Selector="Border.toast-panel">
@@ -671,6 +720,7 @@
                               Content="{TemplateBinding Content}"
                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                              Foreground="{TemplateBinding Foreground}"
                               TextBlock.Foreground="{TemplateBinding Foreground}" />
           </Border>
         </ControlTemplate>
@@ -805,6 +855,7 @@
                               Content="{TemplateBinding Content}"
                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                              Foreground="{TemplateBinding Foreground}"
                               TextBlock.Foreground="{TemplateBinding Foreground}" />
           </Border>
         </ControlTemplate>
@@ -845,28 +896,6 @@
       <Setter Property="Background" Value="{x:Null}" />
     </Style>
 
-    <!-- primary-action / secondary-action: override FluentTheme pointerover via ContentPresenter -->
-    <Style Selector="Button.primary-action /template/ ContentPresenter">
-      <Setter Property="Transitions">
-        <Transitions>
-          <BrushTransition Property="Background" Duration="0:0:0.12" />
-        </Transitions>
-      </Setter>
-    </Style>
-    <Style Selector="Button.primary-action:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="{StaticResource AccentHoverBrush}" />
-    </Style>
-    <Style Selector="Button.secondary-action /template/ ContentPresenter">
-      <Setter Property="Transitions">
-        <Transitions>
-          <BrushTransition Property="Background" Duration="0:0:0.12" />
-        </Transitions>
-      </Setter>
-    </Style>
-    <Style Selector="Button.secondary-action:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="{StaticResource SecondaryHoverBrush}" />
-    </Style>
-
     <!-- Custom title bar buttons (custom Template for reliable transition) -->
     <Style Selector="Button.titlebar-btn">
       <Setter Property="Background" Value="Transparent" />
@@ -894,6 +923,7 @@
                               Content="{TemplateBinding Content}"
                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                              Foreground="{TemplateBinding Foreground}"
                               TextBlock.Foreground="{TemplateBinding Foreground}" />
           </Border>
         </ControlTemplate>

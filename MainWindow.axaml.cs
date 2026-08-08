@@ -44,6 +44,84 @@ public partial class MainWindow : Window
         public double InferMs { get; init; }
     }
 
+    private readonly record struct WaveformPoint(long TimestampNs, float Rms);
+
+    private sealed class WaveformAccumulator
+    {
+        public long FrameIndex { get; set; } = long.MinValue;
+        public double SumSquares { get; set; }
+        public int SampleCount { get; set; }
+
+        public void Reset()
+        {
+            FrameIndex = long.MinValue;
+            SumSquares = 0.0;
+            SampleCount = 0;
+        }
+    }
+
+    private sealed class PlaybackWaveformAccumulator
+    {
+        public double SumSquares { get; set; }
+        public int SampleCount { get; set; }
+        public long FirstMediaTimestampNs { get; set; }
+        public long LastMediaTimestampNs { get; set; }
+
+        public void Reset()
+        {
+            SumSquares = 0.0;
+            SampleCount = 0;
+            FirstMediaTimestampNs = 0;
+            LastMediaTimestampNs = 0;
+        }
+    }
+    private sealed class PlaybackTimestampSegment
+    {
+        public PlaybackTimestampSegment(long nextTimestampNs, int remainingSamples)
+        {
+            NextTimestampNs = nextTimestampNs;
+            RemainingSamples = remainingSamples;
+        }
+
+        public long NextTimestampNs { get; set; }
+        public int RemainingSamples { get; set; }
+    }
+
+    private sealed class PlaybackTapWaveProvider : IWaveProvider
+    {
+        private readonly BufferedWaveProvider _source;
+        private readonly object _sync;
+        private readonly Action<byte[], int, int, int> _onRead;
+
+        public PlaybackTapWaveProvider(
+            BufferedWaveProvider source,
+            object sync,
+            Action<byte[], int, int, int> onRead)
+        {
+            _source = source;
+            _sync = sync;
+            _onRead = onRead;
+        }
+
+        public WaveFormat WaveFormat => _source.WaveFormat;
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            lock (_sync)
+            {
+                int bufferedBytesBeforeRead = _source.BufferedBytes;
+                int read = _source.Read(buffer, offset, count);
+                int mediaBytesRead = Math.Min(read, bufferedBytesBeforeRead);
+                mediaBytesRead -= mediaBytesRead % WaveFormat.BlockAlign;
+                if (read > 0)
+                {
+                    _onRead(buffer, offset, read, mediaBytesRead);
+                }
+                return read;
+            }
+        }
+    }
+    private const string DefaultServerUri = "ws://127.0.0.1:8765/";
     private const int SampleRate = 16000;
     private const int Channels = 1;
     private const long NsPerSample = 1_000_000_000L / SampleRate;
@@ -86,6 +164,7 @@ public partial class MainWindow : Window
     private Point _dragStartPoint;
     private bool _dragStarted;
     private List<string>? _dragCandidates;
+    private List<string>? _activeDragFilenames;
     private string? _selectedInputDeviceId;
     private string? _selectedOutputDeviceId;
     private string _fileSortMode = "time_desc";
@@ -129,6 +208,7 @@ public partial class MainWindow : Window
     private IWaveProvider? _captureProvider;
     private byte[] _captureReadBuffer = Array.Empty<byte>();
     private BufferedWaveProvider? _waveProvider;
+    private IWaveProvider? _playbackWaveProvider;
     private IWavePlayer? _waveOut;
     private MMDevice? _outputDevice;
     private CancellationTokenSource? _streamingCts;
@@ -140,12 +220,15 @@ public partial class MainWindow : Window
     private TaskCompletionSource<(string UploadId, string FinalName)>? _uploadDoneTcs;
 
     private long _monoBaseTimestamp;
-    private long _lastSentAudioTsNs;
+    private long _nextCaptureAudioTsNs;
     private long _streamStartNs;
     private int _streamSessionId;
     private double _emaTotalLatencyMs;
     private double _emaInferLatencyMs;
     private double _emaQueueLatencyMs;
+    private bool _hasLatencyEstimate;
+    private int _effectiveServerBlockMs;
+    private int _pendingLatencyReset;
     private const double LatencyEmaAlpha = 0.2;
     private bool _isPlaying;
     private bool _playbackStarted;
@@ -153,23 +236,31 @@ public partial class MainWindow : Window
     private bool _serverPassthroughVoice;
 
     // 波形显示
-    // 输入：WASAPI 回调直接写 RMS（简单高效）
-    // 输入/输出波形：各自使用原始音频环形缓冲 + 同一定时器消费，保证同步滚动
-    // 输入侧：定时器消费时跳过积压，始终读最新数据，消除延迟感
-    private readonly float[] _waveformInput = new float[400];
-    private readonly float[] _waveformOutput = new float[400];
-    private int _waveformInPos;
-    private int _waveformOutPos;
-    private readonly float[] _waveformAudioInBuf = new float[16000 * 4];  // 4秒输入原始音频（跳过积压）
-    private int _waveformAudioInWritePos;
-    private int _waveformAudioInReadPos;
-    private readonly object _waveformAudioInLock = new();
-    private readonly float[] _waveformAudioOutBuf = new float[16000 * 8]; // 8秒输出原始音频
-    private int _waveformAudioOutWritePos;
-    private int _waveformAudioOutReadPos;
-    private readonly object _waveformAudioOutLock = new();
-    private double _waveformMaxIn = 0.001;
-    private double _waveformMaxOut = 0.001;
+    // 声卡实际播放每累计 20ms 样本就生成一对输入/输出 RMS 点，分辨率与网络切片无关。
+    // 输入通过播放样本的媒体时间戳回查；两条曲线共用播放时间轴和固定 dBFS 量程。
+    private const int WaveformFrameSamples = SampleRate / 50;
+    private const long WaveformFrameDurationNs = WaveformFrameSamples * NsPerSample;
+    private const long WaveformInterpolationMaxGapNs = WaveformFrameDurationNs * 8;
+    private const long CaptureTimestampResyncThresholdNs = 1_000_000_000L;
+    private const long WaveformWindowNs = 8_000_000_000L;
+    private const long WaveformRetentionNs = 30_000_000_000L;
+    private const double WaveformFloorDb = -60.0;
+    private const double WaveformCeilingDb = 0.0;
+    private readonly List<WaveformPoint> _waveformInputHistory = new();
+    private readonly List<WaveformPoint> _waveformInputSourceHistory = new();
+    private readonly List<WaveformPoint> _waveformOutputHistory = new();
+    private readonly WaveformAccumulator _waveformInputAccumulator = new();
+    private readonly PlaybackWaveformAccumulator _waveformPlaybackAccumulator = new();
+    private readonly Queue<PlaybackTimestampSegment> _playbackTimestampSegments = new();
+    private readonly object _playbackTimestampSync = new();
+    private long _playbackExpectedTimestampNs;
+    private long _waveformPlaybackTimelineNs;
+    private readonly object _waveformInputLock = new();
+    private readonly object _waveformOutputLock = new();
+    private readonly object _waveformInputSourceLock = new();
+    private long _waveformLastDataWallNs;
+    private long _waveformDisplayEndNs;
+    private long _waveformDisplayLastTickNs;
     private DispatcherTimer? _waveformTimer;
     private ModelState _modelState = ModelState.NotReady;
     private bool _uiInitialized;
@@ -207,10 +298,10 @@ public partial class MainWindow : Window
 
         InlinePthDropBorder.AddHandler(DragDrop.DragOverEvent, InlinePthBorder_DragOver);
         InlinePthDropBorder.AddHandler(DragDrop.DropEvent, InlinePthBorder_Drop);
-        InlinePthDropBorder.AddHandler(DragDrop.DragLeaveEvent, (_, _) => SetSlotHighlight(InlinePthDropBorder, false));
+        InlinePthDropBorder.AddHandler(DragDrop.DragLeaveEvent, (_, _) => RestoreDragAvailabilityHighlight(InlinePthDropBorder));
         InlineIndexDropBorder.AddHandler(DragDrop.DragOverEvent, InlineIndexBorder_DragOver);
         InlineIndexDropBorder.AddHandler(DragDrop.DropEvent, InlineIndexBorder_Drop);
-        InlineIndexDropBorder.AddHandler(DragDrop.DragLeaveEvent, (_, _) => SetSlotHighlight(InlineIndexDropBorder, false));
+        InlineIndexDropBorder.AddHandler(DragDrop.DragLeaveEvent, (_, _) => RestoreDragAvailabilityHighlight(InlineIndexDropBorder));
 
         // Smooth corner / border transition when OS maximizes or restores
         PropertyChanged += (_, e) =>
@@ -377,8 +468,9 @@ public partial class MainWindow : Window
         var origin = selectedButton.TranslatePoint(new Point(0, 0), MainTabsHeaderGrid);
         if (!origin.HasValue) return;
 
-        var targetX = origin.Value.X;
-        var targetWidth = Math.Max(0, selectedButton.Bounds.Width);
+        const double indicatorInset = 12.0;
+        var targetX = origin.Value.X + indicatorInset;
+        var targetWidth = Math.Max(0, selectedButton.Bounds.Width - indicatorInset * 2);
         if (targetWidth <= 0) return;
 
         if (_mainTabUnderlineTransform == null)
@@ -452,8 +544,9 @@ public partial class MainWindow : Window
             var serverUri = ServerUriTextBox.Text?.Trim() ?? string.Empty;
             if (string.IsNullOrWhiteSpace(serverUri))
             {
-                Log("请输入有效的服务器地址。");
-                return;
+                serverUri = DefaultServerUri;
+                ServerUriTextBox.Text = serverUri;
+                Log($"未指定服务器地址，使用本地默认地址：{serverUri}");
             }
 
             if (!Uri.TryCreate(serverUri, UriKind.Absolute, out _))
@@ -593,8 +686,12 @@ public partial class MainWindow : Window
     {
         if (e.DataTransfer.Contains(DataFormat.Text))
         {
-            e.DragEffects = DragDropEffects.Copy;
-            SetSlotHighlight(InlinePthDropBorder, true);
+            var hasPth = (e.DataTransfer.TryGetText() ?? string.Empty)
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(filename => filename.Trim().EndsWith(".pth", StringComparison.OrdinalIgnoreCase));
+            e.DragEffects = hasPth ? DragDropEffects.Copy : DragDropEffects.None;
+            SetSlotHighlight(InlinePthDropBorder, true, !hasPth);
+            e.Handled = true;
         }
         else
         {
@@ -610,7 +707,8 @@ public partial class MainWindow : Window
             var hasPth = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                              .Any(f => f.Trim().EndsWith(".pth", StringComparison.OrdinalIgnoreCase));
             e.DragEffects = hasPth ? DragDropEffects.Copy : DragDropEffects.None;
-            if (hasPth) SetSlotHighlight(VoiceModelsDropZoneBorder, true);
+            SetSlotHighlight(VoiceModelsDropZoneBorder, true, !hasPth);
+            e.Handled = true;
         }
         else
         {
@@ -620,7 +718,7 @@ public partial class MainWindow : Window
 
     private void VoiceModels_DragLeave(object? sender, RoutedEventArgs e)
     {
-        SetSlotHighlight(VoiceModelsDropZoneBorder, false);
+        RestoreDragAvailabilityHighlight(VoiceModelsDropZoneBorder);
     }
 
     private void VoiceModels_Drop(object? sender, DragEventArgs e)
@@ -665,7 +763,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(text)) return;
 
         var name = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                       .Select(t => t.Trim()).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+                       .Select(t => t.Trim()).FirstOrDefault(t => t.EndsWith(".pth", StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(name)) return;
 
         var fileName = Path.GetFileName(name);
@@ -682,8 +780,12 @@ public partial class MainWindow : Window
     {
         if (e.DataTransfer.Contains(DataFormat.Text))
         {
-            e.DragEffects = DragDropEffects.Copy;
-            SetSlotHighlight(InlineIndexDropBorder, true);
+            var hasIndex = (e.DataTransfer.TryGetText() ?? string.Empty)
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(filename => filename.Trim().EndsWith(".index", StringComparison.OrdinalIgnoreCase));
+            e.DragEffects = hasIndex ? DragDropEffects.Copy : DragDropEffects.None;
+            SetSlotHighlight(InlineIndexDropBorder, true, !hasIndex);
+            e.Handled = true;
         }
         else
         {
@@ -698,7 +800,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(text)) return;
 
         var name = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                       .Select(t => t.Trim()).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+                       .Select(t => t.Trim()).FirstOrDefault(t => t.EndsWith(".index", StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(name)) return;
 
         var fileName = Path.GetFileName(name);
@@ -932,12 +1034,20 @@ public partial class MainWindow : Window
         data.Add(DataTransferItem.CreateText(string.Join("\n", selected)));
         var dragEvent = _pendingDragEvent;
         _pendingDragEvent = null;
-        await DragDrop.DoDragDropAsync(dragEvent, data, DragDropEffects.Copy);
+        _activeDragFilenames = selected;
+        RefreshDragAvailabilityHighlights();
 
-        // Drag operation ended — clear any stale slot highlights
-        // (DragLeave is not always fired when the drag is cancelled or released outside a drop target)
-        foreach (var b in new[] { HubertSlotBorder, RmvpeSlotBorder, VoiceModelsDropZoneBorder, InlinePthDropBorder, InlineIndexDropBorder })
-            SetSlotHighlight(b, false);
+        try
+        {
+            await DragDrop.DoDragDropAsync(dragEvent, data, DragDropEffects.Copy);
+        }
+        finally
+        {
+            // DragLeave is not always fired when the drag is cancelled or released
+            // outside a drop target, so always clear the guidance here.
+            _activeDragFilenames = null;
+            RefreshDragAvailabilityHighlights();
+        }
     }
 
     private void SlotBorder_DragOver(object? sender, Avalonia.Input.DragEventArgs e)
@@ -946,12 +1056,13 @@ public partial class MainWindow : Window
 
         if (e.DataTransfer.Contains(DataFormat.Text))
         {
-            e.DragEffects = DragDropEffects.Copy;
             var text = e.DataTransfer.TryGetText() ?? string.Empty;
             var filenames = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                                .Select(f => f.Trim()).Where(f => !string.IsNullOrWhiteSpace(f)).ToList();
-            var anyInvalid = filenames.Any(f => !IsFilenameAllowedForSlot(slot, f));
-            SetSlotHighlight(border, true, anyInvalid);
+            var allValid = filenames.Count > 0 && filenames.All(f => IsFilenameAllowedForSlot(slot, f));
+            e.DragEffects = allValid ? DragDropEffects.Copy : DragDropEffects.None;
+            SetSlotHighlight(border, true, !allValid);
+            e.Handled = true;
         }
         else
         {
@@ -961,7 +1072,7 @@ public partial class MainWindow : Window
 
     private void SlotBorder_DragLeave(object? sender, EventArgs e)
     {
-        SetSlotHighlight(sender, false);
+        RestoreDragAvailabilityHighlight(sender);
     }
 
     private async void SlotBorder_Drop(object? sender, Avalonia.Input.DragEventArgs e)
@@ -994,11 +1105,51 @@ public partial class MainWindow : Window
     {
         if (sender is not Border border) return;
 
-        border.Classes.Remove("drag-valid");
-        border.Classes.Remove("drag-invalid");
+        var desiredClass = active
+            ? invalid ? "drag-invalid" : "drag-valid"
+            : null;
 
-        if (active)
-            border.Classes.Add(invalid ? "drag-invalid" : "drag-valid");
+        if (desiredClass != "drag-valid")
+            border.Classes.Remove("drag-valid");
+        else if (!border.Classes.Contains("drag-valid"))
+            border.Classes.Add("drag-valid");
+
+        if (desiredClass != "drag-invalid")
+            border.Classes.Remove("drag-invalid");
+        else if (!border.Classes.Contains("drag-invalid"))
+            border.Classes.Add("drag-invalid");
+    }
+
+    private void RefreshDragAvailabilityHighlights()
+    {
+        foreach (var border in new[] { HubertSlotBorder, RmvpeSlotBorder, VoiceModelsDropZoneBorder, InlinePthDropBorder, InlineIndexDropBorder })
+        {
+            RestoreDragAvailabilityHighlight(border);
+        }
+    }
+
+    private void RestoreDragAvailabilityHighlight(object? sender)
+    {
+        if (sender is not Border border || _activeDragFilenames is not { Count: > 0 } filenames)
+        {
+            SetSlotHighlight(sender, false);
+            return;
+        }
+
+        var isAvailable = border switch
+        {
+            _ when ReferenceEquals(border, VoiceModelsDropZoneBorder) =>
+                filenames.Any(filename => filename.EndsWith(".pth", StringComparison.OrdinalIgnoreCase)),
+            _ when ReferenceEquals(border, InlinePthDropBorder) =>
+                border.IsVisible && filenames.Any(filename => filename.EndsWith(".pth", StringComparison.OrdinalIgnoreCase)),
+            _ when ReferenceEquals(border, InlineIndexDropBorder) =>
+                border.IsVisible && filenames.Any(filename => filename.EndsWith(".index", StringComparison.OrdinalIgnoreCase)),
+            _ when border.Tag is string slot =>
+                filenames.All(filename => IsFilenameAllowedForSlot(slot, filename)),
+            _ => false,
+        };
+
+        SetSlotHighlight(border, isAvailable);
     }
 
     private void FileSortComboBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -1125,7 +1276,6 @@ public partial class MainWindow : Window
         _bufferCapacityMs = (int)Math.Round(BufferCapacitySlider.Value);
         _networkSliceMs = (int)Math.Round(NetworkSliceSlider.Value);
         _useAdaptiveBuffer = AutoBufferBtn.Classes.Contains("active");
-        _jitterEstimator.BlockTimeMs = BlockTimeSlider.Value;
         _jitterEstimator.JitterFactor = JitterFactorSlider.Value;
         _jitterEstimator.MinBufferMs = MinBufferSlider.Value;
         _jitterEstimator.MaxBufferMs = JitterMaxBufferSlider.Value;
@@ -1157,6 +1307,16 @@ public partial class MainWindow : Window
         var vm = _voiceModelsSelection.FirstOrDefault(v => string.Equals(v.Id, id, StringComparison.Ordinal));
         if (vm is null)
         {
+            return;
+        }
+
+        bool isSameSelection = string.Equals(_selectedVoiceModelId, id, StringComparison.Ordinal);
+        if (isSameSelection
+            && !string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal)
+            && !string.Equals(id, VoiceModelItem.ServerRawId, StringComparison.Ordinal)
+            && _modelState is ModelState.Loading or ModelState.Ready)
+        {
+            Log(_modelState == ModelState.Ready ? "当前模型已就绪，无需重复加载。" : "当前模型正在准备中，请稍候。");
             return;
         }
 
@@ -1433,7 +1593,6 @@ public partial class MainWindow : Window
     {
         BlockTimeValueText?.Text = $"{e.NewValue:F0} ms";
         if (!_uiInitialized) return;
-        _jitterEstimator.BlockTimeMs = e.NewValue;
         UpdateBlockTimeValidationUi();
         _ = ApplyServerSettingsAsync();
     }
@@ -1747,6 +1906,12 @@ public partial class MainWindow : Window
         GlobalStatusTextBlock.Text = isConnected ? "已连接" : "未连接";
         if (!isConnected)
         {
+            _realtimeConfigDebounceTimer?.Stop();
+            Interlocked.Exchange(ref _realtimeConfigDebouncePending, 0);
+            _lastSentConfig.Clear();
+            _lastSentConfigSeq = 0;
+            _effectiveServerBlockMs = 0;
+            Interlocked.Exchange(ref _pendingLatencyReset, 0);
             SetModelState(ModelState.NotReady);
         }
         else if (_modelState == ModelState.NotReady)
@@ -1832,28 +1997,48 @@ public partial class MainWindow : Window
             switch (type)
             {
                 case "config_ack":
+                {
+                    long ackSeq = _lastSentConfigSeq;
+                    if (root.TryGetProperty("seq", out var seqElement) && seqElement.TryGetInt64(out var seqValue))
+                    {
+                        ackSeq = seqValue;
+                    }
+
+                    if (ackSeq != _lastSentConfigSeq)
+                    {
+                        Log($"忽略过期配置确认 (ACK: {ackSeq}, Latest: {_lastSentConfigSeq})");
+                        break;
+                    }
+
+                    if (root.TryGetProperty("effective", out var effectiveElement)
+                        && effectiveElement.TryGetProperty("block_ms", out var blockMsElement)
+                        && blockMsElement.TryGetInt32(out var acknowledgedBlockMs))
+                    {
+                        bool blockChanged = _effectiveServerBlockMs > 0 && acknowledgedBlockMs != _effectiveServerBlockMs;
+                        _effectiveServerBlockMs = acknowledgedBlockMs;
+
+                        if (blockChanged && _isPlaying)
+                        {
+                            Interlocked.Exchange(ref _pendingLatencyReset, 1);
+                            TotalLatencyTextBlock.Text = "-- ms";
+                            InferenceLatencyTextBlock.Text = "-- ms";
+                            Log($"服务端分块已切换为 {acknowledgedBlockMs}ms，正在重新校准自动缓冲。");
+                        }
+                    }
                     SetModelState(ModelState.Ready);
                     SetActiveModelLoadingState(isLoading: false);
                     if (root.TryGetProperty("hash", out var hashElement))
                     {
-                        long ackSeq = _lastSentConfigSeq;
-                        if (root.TryGetProperty("seq", out var seqElement) && seqElement.TryGetInt64(out var seqValue))
+                        var serverHash = hashElement.GetString() ?? string.Empty;
+                        var localHash = ComputeConfigHash(_lastSentConfig);
+                        if (!string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase))
                         {
-                            ackSeq = seqValue;
-                        }
-
-                        if (ackSeq == _lastSentConfigSeq)
-                        {
-                            var serverHash = hashElement.GetString() ?? string.Empty;
-                            var localHash = ComputeConfigHash(_lastSentConfig);
-                            if (!string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase))
-                            {
-                                Log("[WARN] 配置不一致，正在强制同步...");
-                                _ = SendConfigurationAsync(true);
-                            }
+                            Log("[WARN] 配置不一致，正在强制同步...");
+                            _ = SendConfigurationAsync(true);
                         }
                     }
                     break;
+                }
                 case "config_error":
                     SetModelState(ModelState.Error, root.TryGetProperty("message", out var configErrorMessage) ? configErrorMessage.GetString() ?? "模型加载失败" : "模型加载失败");
                     MarkCurrentTargetModelError();
@@ -2849,6 +3034,23 @@ public partial class MainWindow : Window
             { "rms_mix_rate", _rmsMixRate },
         };
 
+        var readinessKeys = new[]
+        {
+            "model_path",
+            "index_path",
+            "f0method",
+            "passthrough",
+        };
+        bool readinessChanged = readinessKeys.Any(key =>
+            !_lastSentConfig.TryGetValue(key, out var previous)
+            || !Equals(previous, currentConfig[key]));
+
+        float previousIndexRate = _lastSentConfig.TryGetValue("index_rate", out var previousIndexRateValue)
+            ? Convert.ToSingle(previousIndexRateValue)
+            : 0.0f;
+        bool indexUsageChanged = (previousIndexRate > 0.0f) != (indexRate > 0.0f);
+        readinessChanged |= indexUsageChanged;
+
         var diffConfig = new Dictionary<string, object>();
         foreach (var pair in currentConfig)
         {
@@ -2870,9 +3072,22 @@ public partial class MainWindow : Window
 
         var seq = Interlocked.Increment(ref _configSeq);
         _lastSentConfigSeq = seq;
-        SetModelState(ModelState.Loading);
+        if (readinessChanged || _modelState != ModelState.Ready)
+        {
+            SetModelState(ModelState.Loading);
+        }
         await _client.SendCommandAsync(new { config = diffConfig, seq });
         Log($"已发送配置 (Keys: {diffConfig.Count})");
+    }
+
+    private void ResetLatencyTracking()
+    {
+        _jitterEstimator.Reset();
+        _emaTotalLatencyMs = 0;
+        _emaInferLatencyMs = 0;
+        _emaQueueLatencyMs = 0;
+        _hasLatencyEstimate = false;
+        _latencySamples.Clear();
     }
 
     private void StartStreaming()
@@ -2888,8 +3103,10 @@ public partial class MainWindow : Window
         }
 
         _streamStartNs = GetMonoNs();
-        _lastSentAudioTsNs = 0;
+        _nextCaptureAudioTsNs = 0;
         _streamSessionId = unchecked(_streamSessionId + 1);
+        Interlocked.Exchange(ref _pendingLatencyReset, 0);
+        ResetLatencyTracking();
 
         _waveProvider = new BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels))
         {
@@ -2897,6 +3114,8 @@ public partial class MainWindow : Window
             DiscardOnBufferOverflow = true,
             ReadFully = true,
         };
+        ResetWaveformHistory();
+        _playbackWaveProvider = new PlaybackTapWaveProvider(_waveProvider, _playbackTimestampSync, CapturePlaybackWaveform);
 
         var selectedOutput = OutputDeviceComboBox.SelectedItem as AudioDeviceItem;
         if (selectedOutput != null && !string.IsNullOrWhiteSpace(selectedOutput.Id))
@@ -2920,7 +3139,7 @@ public partial class MainWindow : Window
         }
 
         _waveOut.PlaybackStopped += OnPlaybackStopped;
-        _waveOut.Init(_waveProvider);
+        _waveOut.Init(_playbackWaveProvider);
         _playbackStarted = false;
         UpdateStreamingUi(true);
 
@@ -2987,87 +3206,367 @@ public partial class MainWindow : Window
     {
         if (_waveformTimer != null) return;
 
-        _waveformTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
-        _waveformTimer.Tick += (_, _) =>
-        {
-            const int samplesPerTick = 320;
-
-            // --- 输入（跳过积压，始终读最新数据，消除延迟感）---
-            float inSumSq = 0; int inCount = 0;
-            lock (_waveformAudioInLock)
-            {
-                int avail = (_waveformAudioInWritePos - _waveformAudioInReadPos + _waveformAudioInBuf.Length) % _waveformAudioInBuf.Length;
-                // Skip stale backlog: keep only the latest samplesPerTick samples
-                if (avail > samplesPerTick)
-                {
-                    int skip = avail - samplesPerTick;
-                    _waveformAudioInReadPos = (_waveformAudioInReadPos + skip) % _waveformAudioInBuf.Length;
-                    avail = samplesPerTick;
-                }
-                for (int s = 0; s < avail; s++)
-                {
-                    float v = _waveformAudioInBuf[_waveformAudioInReadPos];
-                    inSumSq += v * v; inCount++;
-                    _waveformAudioInReadPos = (_waveformAudioInReadPos + 1) % _waveformAudioInBuf.Length;
-                }
-            }
-            {
-                float rawRms = inCount > 0 ? (float)Math.Sqrt(inSumSq / inCount) : 0f;
-                // Peak envelope: instant attack, slow release (τ≈190ms)
-                float prevIn = _waveformInput[(_waveformInPos + _waveformInput.Length - 1) % _waveformInput.Length];
-                float rms = rawRms > prevIn ? rawRms : prevIn * 0.9f;
-                _waveformInput[_waveformInPos] = rms;
-                if (rms > _waveformMaxIn) _waveformMaxIn = rms;
-            }
-            _waveformInPos = (_waveformInPos + 1) % _waveformInput.Length;
-            _waveformMaxIn *= 0.998;
-            if (_waveformMaxIn < 0.001) _waveformMaxIn = 0.001;
-
-            // --- 输出 ---
-            float outSumSq = 0; int outCount = 0;
-            lock (_waveformAudioOutLock)
-            {
-                int avail2 = (_waveformAudioOutWritePos - _waveformAudioOutReadPos + _waveformAudioOutBuf.Length) % _waveformAudioOutBuf.Length;
-                // Skip stale backlog: always show the latest audio (same as input)
-                if (avail2 > samplesPerTick)
-                {
-                    int skip = avail2 - samplesPerTick;
-                    _waveformAudioOutReadPos = (_waveformAudioOutReadPos + skip) % _waveformAudioOutBuf.Length;
-                    avail2 = samplesPerTick;
-                }
-                for (int s = 0; s < avail2; s++)
-                {
-                    float v = _waveformAudioOutBuf[_waveformAudioOutReadPos];
-                    outSumSq += v * v; outCount++;
-                    _waveformAudioOutReadPos = (_waveformAudioOutReadPos + 1) % _waveformAudioOutBuf.Length;
-                }
-            }
-            {
-                float rawRms = outCount > 0 ? (float)Math.Sqrt(outSumSq / outCount) : 0f;
-                // Peak envelope: instant attack, slow release (τ≈190ms) — same as input
-                float prevOut = _waveformOutput[(_waveformOutPos + _waveformOutput.Length - 1) % _waveformOutput.Length];
-                float rms = rawRms > prevOut ? rawRms : prevOut * 0.9f;
-                _waveformOutput[_waveformOutPos] = rms;
-                if (rms > _waveformMaxOut) _waveformMaxOut = rms;
-            }
-            _waveformOutPos = (_waveformOutPos + 1) % _waveformOutput.Length;
-            _waveformMaxOut *= 0.998;
-            if (_waveformMaxOut < 0.001) _waveformMaxOut = 0.001;
-
-            DrawWaveform();
-        };
+        _waveformTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+        _waveformTimer.Tick += (_, _) => DrawWaveform();
         _waveformTimer.Start();
     }
 
+    private void ResetWaveformHistory()
+    {
+        lock (_waveformInputSourceLock)
+        {
+            _waveformInputSourceHistory.Clear();
+            _waveformInputAccumulator.Reset();
+        }
+        lock (_waveformInputLock)
+        {
+            _waveformInputHistory.Clear();
+        }
+        lock (_waveformOutputLock)
+        {
+            _waveformOutputHistory.Clear();
+            _waveformPlaybackAccumulator.Reset();
+        }
+        lock (_playbackTimestampSync)
+        {
+            _playbackTimestampSegments.Clear();
+            _playbackExpectedTimestampNs = 0;
+        }
+        _waveformPlaybackTimelineNs = 0;
+        Interlocked.Exchange(ref _waveformLastDataWallNs, GetMonoNs());
+        _waveformDisplayEndNs = 0;
+        _waveformDisplayLastTickNs = GetMonoNs();
+        DrawWaveform();
+    }
+    private void AppendInputSourceSamples(
+        List<WaveformPoint> history,
+        WaveformAccumulator accumulator,
+        object historyLock,
+        byte[] buffer,
+        int offset,
+        int count,
+        long startTimestampNs)
+    {
+        int alignedCount = count - count % 4;
+        long streamOriginNs = Interlocked.Read(ref _streamStartNs);
+        if (alignedCount <= 0 || startTimestampNs <= 0 || streamOriginNs <= 0)
+        {
+            return;
+        }
+
+        int sampleCount = alignedCount / 4;
+        lock (historyLock)
+        {
+            for (int sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
+            {
+                long sampleTimestampNs = startTimestampNs + sampleIndex * NsPerSample;
+                long relativeTimestampNs = sampleTimestampNs - streamOriginNs;
+                if (relativeTimestampNs < 0)
+                {
+                    continue;
+                }
+
+                long frameIndex = relativeTimestampNs / WaveformFrameDurationNs;
+                if (accumulator.FrameIndex == long.MinValue)
+                {
+                    accumulator.FrameIndex = frameIndex;
+                }
+                else if (frameIndex < accumulator.FrameIndex)
+                {
+                    continue;
+                }
+                else if (frameIndex > accumulator.FrameIndex)
+                {
+                    CommitWaveformFrame(history, accumulator, streamOriginNs);
+                    accumulator.FrameIndex = frameIndex;
+                    accumulator.SumSquares = 0.0;
+                    accumulator.SampleCount = 0;
+                }
+
+                float sample = BitConverter.ToSingle(buffer, offset + sampleIndex * 4);
+                accumulator.SumSquares += sample * sample;
+                accumulator.SampleCount++;
+            }
+
+            if (history.Count > 0)
+            {
+                long cutoffNs = history[^1].TimestampNs - WaveformRetentionNs;
+                int removeCount = 0;
+                while (removeCount < history.Count && history[removeCount].TimestampNs < cutoffNs)
+                {
+                    removeCount++;
+                }
+                if (removeCount > 0)
+                {
+                    history.RemoveRange(0, removeCount);
+                }
+            }
+        }
+
+        Interlocked.Exchange(ref _waveformLastDataWallNs, GetMonoNs());
+    }
+
+    private static void CommitWaveformFrame(
+        List<WaveformPoint> history,
+        WaveformAccumulator accumulator,
+        long streamOriginNs)
+    {
+        if (accumulator.FrameIndex == long.MinValue)
+        {
+            return;
+        }
+
+        float rms = accumulator.SampleCount > 0
+            ? (float)Math.Sqrt(accumulator.SumSquares / accumulator.SampleCount)
+            : 0f;
+        long centerTimestampNs = streamOriginNs
+            + accumulator.FrameIndex * WaveformFrameDurationNs
+            + WaveformFrameDurationNs / 2;
+        history.Add(new WaveformPoint(centerTimestampNs, rms));
+    }
+
+    private bool TryFindInputSourceRms(long mediaTimestampNs, out float rms)
+    {
+        rms = 0f;
+        if (mediaTimestampNs <= 0)
+        {
+            return false;
+        }
+
+        lock (_waveformInputSourceLock)
+        {
+            if (_waveformInputSourceHistory.Count == 0)
+            {
+                return false;
+            }
+
+            int low = 0;
+            int high = _waveformInputSourceHistory.Count - 1;
+            while (low <= high)
+            {
+                int middle = low + (high - low) / 2;
+                if (_waveformInputSourceHistory[middle].TimestampNs < mediaTimestampNs)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            if (low > 0 && low < _waveformInputSourceHistory.Count)
+            {
+                var before = _waveformInputSourceHistory[low - 1];
+                var after = _waveformInputSourceHistory[low];
+                long gapNs = after.TimestampNs - before.TimestampNs;
+                if (gapNs > 0 && gapNs <= WaveformInterpolationMaxGapNs)
+                {
+                    double amount = (double)(mediaTimestampNs - before.TimestampNs) / gapNs;
+                    rms = (float)(before.Rms + (after.Rms - before.Rms) * amount);
+                    return true;
+                }
+            }
+
+            int nearestIndex = Math.Clamp(low, 0, _waveformInputSourceHistory.Count - 1);
+            if (nearestIndex > 0)
+            {
+                long beforeDistance = Math.Abs(
+                    _waveformInputSourceHistory[nearestIndex - 1].TimestampNs - mediaTimestampNs);
+                long afterDistance = Math.Abs(
+                    _waveformInputSourceHistory[nearestIndex].TimestampNs - mediaTimestampNs);
+                if (beforeDistance <= afterDistance)
+                {
+                    nearestIndex--;
+                }
+            }
+
+            var nearest = _waveformInputSourceHistory[nearestIndex];
+            if (Math.Abs(nearest.TimestampNs - mediaTimestampNs) > WaveformInterpolationMaxGapNs)
+            {
+                return false;
+            }
+
+            rms = nearest.Rms;
+            return true;
+        }
+    }
+
+    private void AppendPlaybackComparisonSamples(
+        byte[] buffer,
+        int offset,
+        int count,
+        long startMediaTimestampNs,
+        bool hasMediaTimestamp)
+    {
+        int alignedCount = count - count % 4;
+        if (alignedCount <= 0)
+        {
+            return;
+        }
+
+        int sampleCount = alignedCount / 4;
+        lock (_waveformOutputLock)
+        {
+            for (int sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
+            {
+                float sample = BitConverter.ToSingle(buffer, offset + sampleIndex * 4);
+                _waveformPlaybackAccumulator.SumSquares += sample * sample;
+                _waveformPlaybackAccumulator.SampleCount++;
+
+                if (hasMediaTimestamp && startMediaTimestampNs > 0)
+                {
+                    long mediaTimestampNs = startMediaTimestampNs + sampleIndex * NsPerSample;
+                    if (_waveformPlaybackAccumulator.FirstMediaTimestampNs == 0)
+                    {
+                        _waveformPlaybackAccumulator.FirstMediaTimestampNs = mediaTimestampNs;
+                    }
+                    _waveformPlaybackAccumulator.LastMediaTimestampNs = mediaTimestampNs;
+                }
+
+                if (_waveformPlaybackAccumulator.SampleCount < WaveformFrameSamples)
+                {
+                    continue;
+                }
+
+                float outputRms = (float)Math.Sqrt(
+                    _waveformPlaybackAccumulator.SumSquares / WaveformFrameSamples);
+                long mediaCenterTimestampNs = _waveformPlaybackAccumulator.FirstMediaTimestampNs > 0
+                    ? (_waveformPlaybackAccumulator.FirstMediaTimestampNs
+                        + _waveformPlaybackAccumulator.LastMediaTimestampNs) / 2
+                    : 0;
+                float inputRms = TryFindInputSourceRms(mediaCenterTimestampNs, out float matchedInputRms)
+                    ? matchedInputRms
+                    : 0f;
+
+                if (_waveformPlaybackTimelineNs == 0)
+                {
+                    _waveformPlaybackTimelineNs = GetMonoNs();
+                }
+                else
+                {
+                    _waveformPlaybackTimelineNs += WaveformFrameDurationNs;
+                }
+
+                lock (_waveformInputLock)
+                {
+                    _waveformInputHistory.Add(new WaveformPoint(_waveformPlaybackTimelineNs, inputRms));
+                    long inputCutoffNs = _waveformPlaybackTimelineNs - WaveformRetentionNs;
+                    int inputRemoveCount = 0;
+                    while (inputRemoveCount < _waveformInputHistory.Count
+                        && _waveformInputHistory[inputRemoveCount].TimestampNs < inputCutoffNs)
+                    {
+                        inputRemoveCount++;
+                    }
+                    if (inputRemoveCount > 0)
+                    {
+                        _waveformInputHistory.RemoveRange(0, inputRemoveCount);
+                    }
+                }
+
+                _waveformOutputHistory.Add(new WaveformPoint(_waveformPlaybackTimelineNs, outputRms));
+                long outputCutoffNs = _waveformPlaybackTimelineNs - WaveformRetentionNs;
+                int outputRemoveCount = 0;
+                while (outputRemoveCount < _waveformOutputHistory.Count
+                    && _waveformOutputHistory[outputRemoveCount].TimestampNs < outputCutoffNs)
+                {
+                    outputRemoveCount++;
+                }
+                if (outputRemoveCount > 0)
+                {
+                    _waveformOutputHistory.RemoveRange(0, outputRemoveCount);
+                }
+
+                _waveformPlaybackAccumulator.Reset();
+            }
+        }
+
+        Interlocked.Exchange(ref _waveformLastDataWallNs, GetMonoNs());
+    }
+    private void AddPlaybackSamples(byte[] buffer, int offset, int count, long startTimestampNs)
+    {
+        int alignedCount = count - count % 4;
+        var provider = _waveProvider;
+        if (provider == null || alignedCount <= 0)
+        {
+            return;
+        }
+
+        lock (_playbackTimestampSync)
+        {
+            provider.AddSamples(buffer, offset, alignedCount);
+            if (startTimestampNs > 0)
+            {
+                int sampleCount = alignedCount / 4;
+                _playbackTimestampSegments.Enqueue(new PlaybackTimestampSegment(startTimestampNs, sampleCount));
+            }
+        }
+    }
+
+    private void CapturePlaybackWaveform(byte[] buffer, int offset, int count, int mediaBytesRead)
+    {
+        int alignedCount = count - count % 4;
+        int alignedMediaBytes = Math.Min(alignedCount, mediaBytesRead - mediaBytesRead % 4);
+        int mediaSamples = alignedMediaBytes / 4;
+        int totalSamples = alignedCount / 4;
+        int consumedMediaSamples = 0;
+
+        while (consumedMediaSamples < mediaSamples)
+        {
+            int samplesToAppend;
+            long segmentTimestampNs;
+            if (_playbackTimestampSegments.Count > 0)
+            {
+                var segment = _playbackTimestampSegments.Peek();
+                samplesToAppend = Math.Min(mediaSamples - consumedMediaSamples, segment.RemainingSamples);
+                segmentTimestampNs = segment.NextTimestampNs;
+                segment.NextTimestampNs += samplesToAppend * NsPerSample;
+                segment.RemainingSamples -= samplesToAppend;
+                if (segment.RemainingSamples == 0)
+                {
+                    _playbackTimestampSegments.Dequeue();
+                }
+            }
+            else
+            {
+                if (_playbackExpectedTimestampNs <= 0)
+                {
+                    break;
+                }
+                samplesToAppend = mediaSamples - consumedMediaSamples;
+                segmentTimestampNs = _playbackExpectedTimestampNs;
+            }
+
+            AppendPlaybackComparisonSamples(
+                buffer,
+                offset + consumedMediaSamples * 4,
+                samplesToAppend * 4,
+                segmentTimestampNs,
+                true);
+            consumedMediaSamples += samplesToAppend;
+            _playbackExpectedTimestampNs = segmentTimestampNs + samplesToAppend * NsPerSample;
+        }
+
+        int zeroSamples = totalSamples - mediaSamples;
+        if (zeroSamples > 0)
+        {
+            AppendPlaybackComparisonSamples(
+                buffer,
+                offset + mediaSamples * 4,
+                zeroSamples * 4,
+                0,
+                false);
+        }
+    }
     private void StopStreaming()
     {
         try
         {
-            // Note: waveform timer is kept running so the waveform continues scrolling at 0 amplitude
-            // Note: waveform buffers are NOT cleared — audio will gracefully decay to 0 as ring buffers drain
+            // Keep the timer and timestamp histories so the shared window scrolls away naturally after stopping.
+            // Histories are reset on the next StartStreaming call.
 
             StopAudioSendLoop();
-            _lastSentAudioTsNs = 0;
+            _nextCaptureAudioTsNs = 0;
             _streamStartNs = 0;
             _streamSessionId = unchecked(_streamSessionId + 1);
 
@@ -3093,6 +3592,7 @@ public partial class MainWindow : Window
 
             _outputDevice?.Dispose();
             _outputDevice = null;
+            _playbackWaveProvider = null;
             _waveProvider = null;
             _playbackStarted = false;
             UpdateStreamingUi(false);
@@ -3156,6 +3656,23 @@ public partial class MainWindow : Window
         }
     }
 
+    private long GetNextCaptureTimestampNs(int sampleCount)
+    {
+        long durationNs = sampleCount * NsPerSample;
+        long observedStartNs = GetMonoNs() - durationNs;
+        long expectedStartNs = Interlocked.Read(ref _nextCaptureAudioTsNs);
+
+        long startTimestampNs = expectedStartNs;
+        if (expectedStartNs <= 0
+            || Math.Abs(observedStartNs - expectedStartNs) > CaptureTimestampResyncThresholdNs)
+        {
+            startTimestampNs = observedStartNs;
+        }
+
+        Interlocked.Exchange(ref _nextCaptureAudioTsNs, startTimestampNs + durationNs);
+        return startTimestampNs;
+    }
+
     private void OnAudioDataAvailable(object? sender, WaveInEventArgs e)
     {
         if (e.BytesRecorded == 0)
@@ -3200,7 +3717,11 @@ public partial class MainWindow : Window
                             break;
                         }
 
-                        _waveProvider.AddSamples(_captureReadBuffer, 0, alignedRead);
+                        // Input uses fixed media-time buckets; output is committed only when the device reads it.
+                        long waveformStartNs = GetNextCaptureTimestampNs(alignedRead / 4);
+                        AppendInputSourceSamples(_waveformInputSourceHistory, _waveformInputAccumulator, _waveformInputSourceLock, _captureReadBuffer, 0, alignedRead, waveformStartNs);
+                        AddPlaybackSamples(_captureReadBuffer, 0, alignedRead, waveformStartNs);
+
                         if (!_playbackStarted && _waveProvider.BufferedBytes > 0)
                         {
                             var bufferedMs = _waveProvider.BufferedDuration.TotalMilliseconds;
@@ -3208,25 +3729,6 @@ public partial class MainWindow : Window
                             {
                                 _waveOut.Play();
                                 _playbackStarted = true;
-                            }
-                        }
-
-                        // In bypass mode, input IS the output — write audio to both waveform ring buffers
-                        int wfBypassSamples = alignedRead / 4;
-                        lock (_waveformAudioInLock)
-                        {
-                            for (int s = 0; s < wfBypassSamples; s++)
-                            {
-                                _waveformAudioInBuf[_waveformAudioInWritePos] = BitConverter.ToSingle(_captureReadBuffer, s * 4);
-                                _waveformAudioInWritePos = (_waveformAudioInWritePos + 1) % _waveformAudioInBuf.Length;
-                            }
-                        }
-                        lock (_waveformAudioOutLock)
-                        {
-                            for (int s = 0; s < wfBypassSamples; s++)
-                            {
-                                _waveformAudioOutBuf[_waveformAudioOutWritePos] = BitConverter.ToSingle(_captureReadBuffer, s * 4);
-                                _waveformAudioOutWritePos = (_waveformAudioOutWritePos + 1) % _waveformAudioOutBuf.Length;
                             }
                         }
 
@@ -3248,17 +3750,7 @@ public partial class MainWindow : Window
                         continue;
                     }
 
-                    int samples = alignedRead / 4;
-                    long nowNs = GetMonoNs();
-                    long durationNs = samples * NsPerSample;
-                    long tsNs = nowNs - durationNs;
-                    long lastTs = Interlocked.Read(ref _lastSentAudioTsNs);
-                    if (tsNs <= lastTs)
-                    {
-                        tsNs = lastTs + 1;
-                    }
-
-                    Interlocked.Exchange(ref _lastSentAudioTsNs, tsNs);
+                    long tsNs = GetNextCaptureTimestampNs(alignedRead / 4);
 
                     var messageBytes = new byte[8 + alignedRead];
                     var tsBytes = BitConverter.GetBytes((ulong)tsNs);
@@ -3269,17 +3761,8 @@ public partial class MainWindow : Window
 
                     Array.Copy(tsBytes, 0, messageBytes, 0, 8);
                     Array.Copy(_captureReadBuffer, 0, messageBytes, 8, alignedRead);
+                    AppendInputSourceSamples(_waveformInputSourceHistory, _waveformInputAccumulator, _waveformInputSourceLock, _captureReadBuffer, 0, alignedRead, tsNs);
 
-                    // Write raw audio to input waveform ring buffer (consumed by timer)
-                    int wfInSamples = alignedRead / 4;
-                    lock (_waveformAudioInLock)
-                    {
-                        for (int s = 0; s < wfInSamples; s++)
-                        {
-                            _waveformAudioInBuf[_waveformAudioInWritePos] = BitConverter.ToSingle(_captureReadBuffer, s * 4);
-                            _waveformAudioInWritePos = (_waveformAudioInWritePos + 1) % _waveformAudioInBuf.Length;
-                        }
-                    }
 
                     _audioSendQueue.Enqueue(messageBytes);
                     var currentCount = Interlocked.Increment(ref _audioSendQueueCount);
@@ -3363,6 +3846,10 @@ public partial class MainWindow : Window
             }
 
             ulong tsNs = BitConverter.ToUInt64(tsBytes, 0);
+            long arrivalNs = GetMonoNs();
+            bool hasValidMediaTimestamp = _streamStartNs > 0
+                && tsNs >= (ulong)_streamStartNs
+                && tsNs <= (ulong)long.MaxValue;
             int audioOffset = headerBytes;
             int audioLength = messageData.Length - audioOffset;
             if (audioLength <= 0)
@@ -3370,7 +3857,17 @@ public partial class MainWindow : Window
                 return;
             }
 
+
             double bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+            if (hasValidMediaTimestamp)
+            {
+                if (Interlocked.Exchange(ref _pendingLatencyReset, 0) != 0)
+                {
+                    ResetLatencyTracking();
+                }
+                _jitterEstimator.Update((long)tsNs, arrivalNs);
+            }
+
             bool shouldAdd = true;
             int effectiveTargetLatency = _useAdaptiveBuffer ? _jitterEstimator.GetTargetBufferMs(10) : _targetBufferLatency;
             if (bufferBeforeAddMs > _maxBufferMs)
@@ -3386,28 +3883,15 @@ public partial class MainWindow : Window
                 }
             }
 
-            // Always write to waveform ring buffer regardless of shouldAdd,
-            // so the output waveform shows activity even when packets are dropped for playback
-            int outSamples = audioLength / 4;
-            lock (_waveformAudioOutLock)
-            {
-                for (int s = 0; s < outSamples; s++)
-                {
-                    _waveformAudioOutBuf[_waveformAudioOutWritePos] = BitConverter.ToSingle(messageData, audioOffset + s * 4);
-                    _waveformAudioOutWritePos = (_waveformAudioOutWritePos + 1) % _waveformAudioOutBuf.Length;
-                }
-            }
-
             if (!shouldAdd)
             {
                 return;
             }
 
-            _waveProvider.AddSamples(messageData, audioOffset, audioLength);
-            _jitterEstimator.Update();
+            AddPlaybackSamples(messageData, audioOffset, audioLength, hasValidMediaTimestamp ? (long)tsNs : 0);
             if (!_playbackStarted && _waveOut != null && _waveProvider.BufferedBytes > 0)
             {
-                var minStartBufferMs = Math.Max(_networkSliceMs * 3, Math.Max(effectiveTargetLatency, 60));
+                var minStartBufferMs = Math.Max(effectiveTargetLatency, 40);
                 if (_waveProvider.BufferedDuration.TotalMilliseconds >= minStartBufferMs)
                 {
                     _waveOut.Play();
@@ -3416,14 +3900,24 @@ public partial class MainWindow : Window
                 }
             }
 
-            if (tsNs != 0)
+            if (hasValidMediaTimestamp)
             {
-                double ageAtReceiveMs = (GetMonoNs() - (long)tsNs) / 1_000_000.0;
+                double ageAtReceiveMs = (arrivalNs - (long)tsNs) / 1_000_000.0;
                 double totalMsNow = ageAtReceiveMs + bufferBeforeAddMs;
 
-                _emaTotalLatencyMs = LatencyEmaAlpha * totalMsNow + (1.0 - LatencyEmaAlpha) * _emaTotalLatencyMs;
-                _emaInferLatencyMs = LatencyEmaAlpha * procTimeMs + (1.0 - LatencyEmaAlpha) * _emaInferLatencyMs;
-                _emaQueueLatencyMs = LatencyEmaAlpha * queueTimeMs + (1.0 - LatencyEmaAlpha) * _emaQueueLatencyMs;
+                if (!_hasLatencyEstimate)
+                {
+                    _emaTotalLatencyMs = totalMsNow;
+                    _emaInferLatencyMs = procTimeMs;
+                    _emaQueueLatencyMs = queueTimeMs;
+                    _hasLatencyEstimate = true;
+                }
+                else
+                {
+                    _emaTotalLatencyMs = LatencyEmaAlpha * totalMsNow + (1.0 - LatencyEmaAlpha) * _emaTotalLatencyMs;
+                    _emaInferLatencyMs = LatencyEmaAlpha * procTimeMs + (1.0 - LatencyEmaAlpha) * _emaInferLatencyMs;
+                    _emaQueueLatencyMs = LatencyEmaAlpha * queueTimeMs + (1.0 - LatencyEmaAlpha) * _emaQueueLatencyMs;
+                }
 
                 _latencySamples.Add(new LatencySample { TsNs = GetMonoNs(), TotalMs = totalMsNow, RttMs = queueTimeMs, InferMs = procTimeMs });
 
@@ -3482,58 +3976,115 @@ public partial class MainWindow : Window
         var canvas = WaveformCanvas;
         if (canvas == null) return;
 
-        var width = canvas.Bounds.Width;
-        var height = canvas.Bounds.Height;
+        double width = canvas.Bounds.Width;
+        double height = canvas.Bounds.Height;
         if (width <= 2 || height <= 2) return;
 
-        canvas.Children.Clear();
-
-        var halfH = height / 2.0;
-        var amp = halfH - 4;
-        int count = _waveformInput.Length;
-
-        double scaleIn = _waveformMaxIn > 0.0001 ? 1.0 / _waveformMaxIn : 100.0;
-        double scaleOut = _waveformMaxOut > 0.0001 ? 1.0 / _waveformMaxOut : 100.0;
-
-        // Input: green, top half (向上展开)
-        var inputPts = new Avalonia.Points();
-        int inStart = _waveformInPos;
-        for (int i = 0; i < count; i++)
+        WaveformPoint[] inputHistory;
+        WaveformPoint[] outputHistory;
+        lock (_waveformInputLock)
         {
-            int idx = (inStart + i) % count;
-            double x = i * width / count;
-            double v = Math.Min(_waveformInput[idx] * scaleIn, 1.0);
-            double y = halfH - v * amp;
-            inputPts.Add(new Avalonia.Point(x, y));
+            inputHistory = _waveformInputHistory.ToArray();
         }
-        if (inputPts.Count > 1)
+        lock (_waveformOutputLock)
+        {
+            outputHistory = _waveformOutputHistory.ToArray();
+        }
+
+        canvas.Children.Clear();
+        if (inputHistory.Length == 0 && outputHistory.Length == 0)
+        {
+            return;
+        }
+
+        long latestInputNs = inputHistory.Length > 0 ? inputHistory[^1].TimestampNs : long.MaxValue;
+        long latestOutputNs = outputHistory.Length > 0 ? outputHistory[^1].TimestampNs : long.MaxValue;
+        long availableEndNs = latestInputNs == long.MaxValue
+            ? latestOutputNs
+            : latestOutputNs == long.MaxValue
+                ? latestInputNs
+                : Math.Min(latestInputNs, latestOutputNs);
+
+        long nowNs = GetMonoNs();
+        long elapsedNs = _waveformDisplayLastTickNs > 0
+            ? Math.Clamp(nowNs - _waveformDisplayLastTickNs, 0, 250_000_000L)
+            : 0;
+        _waveformDisplayLastTickNs = nowNs;
+
+        // WasapiOut reads in batches; keep a short visual lead so 60 FPS scrolling stays continuous.
+        const long smoothingBufferNs = 120_000_000L;
+
+        if (_waveformDisplayEndNs == 0)
+        {
+            _waveformDisplayEndNs = availableEndNs - smoothingBufferNs;
+        }
+        else if (_isPlaying)
+        {
+            long availableLeadNs = availableEndNs - _waveformDisplayEndNs;
+            if (_waveformDisplayEndNs > availableEndNs || availableLeadNs > smoothingBufferNs * 3)
+            {
+                _waveformDisplayEndNs = availableEndNs - smoothingBufferNs;
+            }
+            else
+            {
+                _waveformDisplayEndNs = Math.Min(_waveformDisplayEndNs + elapsedNs, availableEndNs);
+            }
+        }
+        else
+        {
+            _waveformDisplayEndNs += elapsedNs;
+        }
+
+        long endTimestampNs = _waveformDisplayEndNs;
+
+        long startTimestampNs = endTimestampNs - WaveformWindowNs;
+        double halfHeight = height / 2.0;
+        double amplitude = halfHeight - 4.0;
+
+        Avalonia.Points BuildPoints(WaveformPoint[] history, double baselineY)
+        {
+            var points = new Avalonia.Points();
+            foreach (var point in history)
+            {
+                if (point.TimestampNs < startTimestampNs || point.TimestampNs > endTimestampNs)
+                {
+                    continue;
+                }
+
+                double x = (point.TimestampNs - startTimestampNs) * width / WaveformWindowNs;
+                double db = 20.0 * Math.Log10(Math.Max(point.Rms, 0.000001f));
+                double normalized = Math.Clamp(
+                    (db - WaveformFloorDb) / (WaveformCeilingDb - WaveformFloorDb),
+                    0.0,
+                    1.0);
+                points.Add(new Avalonia.Point(x, baselineY - normalized * amplitude));
+            }
+            return points;
+        }
+
+        var inputPoints = BuildPoints(inputHistory, halfHeight);
+        if (inputPoints.Count > 1)
+        {
             canvas.Children.Add(new Avalonia.Controls.Shapes.Polyline
             {
-                Points = inputPts,
+                Points = inputPoints,
                 Stroke = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(76, 175, 80)),
                 StrokeThickness = 1,
                 IsHitTestVisible = false,
             });
-
-        // Output: red, bottom half (向上展开，与输入同方向)
-        var outputPts = new Avalonia.Points();
-        int outStart = _waveformOutPos;
-        for (int i = 0; i < count; i++)
-        {
-            int idx = (outStart + i) % count;
-            double x = i * width / count;
-            double v = Math.Min(_waveformOutput[idx] * scaleOut, 1.0);
-            double y = height - 2 - v * amp;
-            outputPts.Add(new Avalonia.Point(x, y));
         }
-        if (outputPts.Count > 1)
+
+        var outputPoints = BuildPoints(outputHistory, height - 2.0);
+        if (outputPoints.Count > 1)
+        {
             canvas.Children.Add(new Avalonia.Controls.Shapes.Polyline
             {
-                Points = outputPts,
+                Points = outputPoints,
                 Stroke = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(244, 67, 54)),
                 StrokeThickness = 1,
                 IsHitTestVisible = false,
             });
+        }
     }
 
     private void InferenceExpander_OnClick(object? sender, RoutedEventArgs e)

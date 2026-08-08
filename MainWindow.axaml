@@ -1,4 +1,4 @@
-<Window xmlns="https://github.com/avaloniaui"
+﻿<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -25,7 +25,7 @@
         <TextBlock x:Name="DeleteConfirmTextBlock" Text="确定要删除选中的文件吗？" />
         <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
           <Button Content="取消" Classes="secondary-action" Click="CancelDelete_OnClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-          <Button Content="确定" Classes="primary-action" Click="ConfirmDelete_OnClick" Background="{StaticResource DangerSoftBrush}" Foreground="{StaticResource DangerTextBrush}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+          <Button Content="确定" Classes="primary-action danger-action" Click="ConfirmDelete_OnClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
         </Grid>
       </StackPanel>
     </Flyout>
@@ -123,7 +123,7 @@
                       Padding="20">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
                   <TextBox x:Name="ServerUriTextBox"
-                           PlaceholderText="ws://127.0.0.1:8000/"
+                           PlaceholderText="ws://127.0.0.1:8765/"
                            Text=""
                            FontSize="15"
                            Padding="14,12"
@@ -142,7 +142,12 @@
 
 
         <!-- Main Tabs Header -->
-              <Grid x:Name="MainTabsHeaderGrid" Grid.Row="1" RowDefinitions="Auto,3" ColumnDefinitions="Auto,Auto,Auto,*" RowSpacing="4">
+              <Grid x:Name="MainTabsHeaderGrid"
+                    Grid.Row="1"
+                    RowDefinitions="Auto,2"
+                    ColumnDefinitions="Auto,Auto,Auto,*"
+                    RowSpacing="6"
+                    Margin="0,0,0,4">
     <Button x:Name="MainTabHeaderBtn0"
       Grid.Row="0"
       Grid.Column="0"
@@ -168,10 +173,10 @@
       Grid.Row="1"
       Grid.ColumnSpan="4"
       HorizontalAlignment="Left"
-      Height="3"
+      Height="2"
       Width="0"
       Background="{StaticResource AccentBrush}"
-      CornerRadius="0" />
+      CornerRadius="2" />
         </Grid>
 
         <!-- Main Tabs -->
@@ -179,7 +184,8 @@
 
                 <!-- ===== TAB 0: 实时变声 ===== -->
                 <TabItem Header="实时变声" Classes="main-tab">
-                  <ScrollViewer Padding="0,0,16,0">
+                  <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
+                                Padding="0,0,16,0">
                     <StackPanel Spacing="16">
 
                       <!-- Voice Model Selection (chips) -->
@@ -530,7 +536,8 @@
                 <TabItem Header="模型与文件" Classes="main-tab">
                   <Grid ColumnDefinitions="1.0*,1.8*" ColumnSpacing="18">
                     <!-- ===== LEFT: Voice Models + Slot Bindings ===== -->
-                    <ScrollViewer Padding="0,0,16,0">
+                    <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
+                                  Padding="0,0,16,0">
                       <StackPanel Spacing="14">
 
                         <!-- Voice Model Management -->
