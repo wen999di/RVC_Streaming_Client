@@ -63,13 +63,13 @@
       <Grid>
         <Ellipse Width="520"
                  Height="520"
-                 Fill="{local:Oklch L=0.72, C=0.04, H=72, A=0.10}"
+                 Fill="{local:Oklch L=0.91, C=0.025, H=171, A=0.10}"
                  HorizontalAlignment="Right"
                  VerticalAlignment="Top"
                  Margin="0,-160,-120,0" />
         <Ellipse Width="380"
                  Height="380"
-                 Fill="{local:Oklch L=0.74, C=0.12, H=58, A=0.13}"
+                 Fill="{local:Oklch L=0.92, C=0.018, H=82, A=0.11}"
                  HorizontalAlignment="Left"
                  VerticalAlignment="Bottom"
                  Margin="-80,0,0,-160" />
@@ -110,24 +110,24 @@
                   VerticalAlignment="Bottom" />
         </Grid>
 
-        <Grid Margin="28,72,28,28" ColumnDefinitions="2.0*,1.0*" ColumnSpacing="24">
+        <Grid Margin="24,68,24,24" ColumnDefinitions="1.75*,1.0*" ColumnSpacing="20">
 
           <!-- ===== LEFT COLUMN ===== -->
-          <Border Grid.Column="0" Classes="surface-card" Padding="24">
+          <Border Grid.Column="0" Classes="surface-card" Padding="20">
             <Grid RowDefinitions="Auto,Auto,*" RowSpacing="16">
 
               <!-- Connection Gate (expanded: disconnected) -->
               <Border x:Name="ConnectionGatePanel"
                       Grid.Row="0"
                       Classes="glass-panel animated-panel"
-                      Padding="20">
+                      Padding="16">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
                   <TextBox x:Name="ServerUriTextBox"
                            PlaceholderText="ws://127.0.0.1:8765/"
                            Text=""
-                           FontSize="15"
-                           Padding="14,12"
-                           CornerRadius="14"
+                           FontSize="14"
+                           Padding="13,10"
+                           CornerRadius="10"
                            VerticalAlignment="Center" />
                   <Button x:Name="ConnectionToggleButton"
                           Grid.Column="1"
@@ -816,8 +816,11 @@
                                    TextAlignment="Left"
                                    VerticalContentAlignment="Top"
                                    FontFamily="Cascadia Code, Consolas, Microsoft YaHei UI"
-                                   Background="Transparent"
-                                   BorderThickness="0" />
+                                   Background="{StaticResource CanvasSoftBrush}"
+                                   BorderBrush="{StaticResource BorderSoftBrush}"
+                                   BorderThickness="1"
+                                   CornerRadius="9"
+                                   Padding="10" />
                         </Grid>
                       </Border>
                       <Border Grid.Column="1" Classes="section-card" Padding="14">
@@ -857,8 +860,11 @@
                                    TextAlignment="Left"
                                    VerticalContentAlignment="Top"
                                    FontFamily="Cascadia Code, Consolas, Microsoft YaHei UI"
-                                   Background="Transparent"
-                                   BorderThickness="0" />
+                                   Background="{StaticResource CanvasSoftBrush}"
+                                   BorderBrush="{StaticResource BorderSoftBrush}"
+                                   BorderThickness="1"
+                                   CornerRadius="9"
+                                   Padding="10" />
                         </Grid>
                       </Border>
                     </Grid>
@@ -869,19 +875,20 @@
             </Grid>
           </Border>
 
-          <!-- ===== RIGHT COLUMN (unified) ===== -->
-          <StackPanel Grid.Column="1" Spacing="24">
-            <Border Classes="glass-panel" Padding="20">
-              <StackPanel Spacing="14">
+          <!-- ===== RIGHT COLUMN (Scheme C visual hierarchy) ===== -->
+          <StackPanel Grid.Column="1" Spacing="16">
+            <Border Classes="glass-panel" Padding="16">
+              <StackPanel Spacing="12">
 
-                <!-- Status Pills -->
-                <Border Classes="status-pill" HorizontalAlignment="Stretch">
+                <!-- Connection / model status -->
+                <Border Classes="status-pill" HorizontalAlignment="Stretch" Padding="12,7">
                   <Grid>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
                       <TextBlock x:Name="GlobalStatusTextBlock"
                                  Text="未连接"
-                                 Foreground="{StaticResource AccentTextBrush}" />
-                      <TextBlock Text="·" Foreground="{StaticResource SecondaryTextBrush}" />
+                                 Foreground="{StaticResource AccentTextBrush}"
+                                 FontWeight="SemiBold" />
+                      <TextBlock Text="·" Foreground="{StaticResource TextMutedBrush}" />
                       <TextBlock x:Name="ModelStatusTextBlock"
                                  Text="模型未加载"
                                  Classes="muted" />
@@ -909,8 +916,8 @@
                 <!-- Primary CTA -->
                 <Button x:Name="StreamingToggleButton"
                         Classes="primary-action"
-                        Height="72"
-                        FontSize="24"
+                        Height="64"
+                        FontSize="22"
                         HorizontalAlignment="Stretch"
                         Click="StreamingToggleButton_OnClick"
                         Content="开始变声" />
@@ -935,73 +942,76 @@
                 </Border>
 
                 <!-- Audio Devices -->
-                <StackPanel Spacing="8">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <TextBlock Text="音频设备"
-                               FontSize="12"
-                               FontWeight="SemiBold"
-                               Foreground="{StaticResource TextMutedBrush}"
-                               VerticalAlignment="Center" />
-                    <Button Grid.Column="1"
-                            Classes="secondary-action"
-                            Click="RefreshAudioDevices_OnClick"
-                            Content="刷新" />
-                  </Grid>
-                  <ComboBox x:Name="InputDeviceComboBox"
-                            PlaceholderText="输入设备" />
-                  <ComboBox x:Name="OutputDeviceComboBox"
-                            PlaceholderText="输出设备" />
-                </StackPanel>
+                <Border Classes="right-section-card">
+                  <StackPanel Spacing="9">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="音频设备" Classes="right-section-title" VerticalAlignment="Center" />
+                      <Button Grid.Column="1"
+                              Classes="secondary-action"
+                              Click="RefreshAudioDevices_OnClick"
+                              Content="刷新"
+                              Padding="9,5"
+                              FontSize="11" />
+                    </Grid>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="输入设备" Classes="latency-label" />
+                      <ComboBox x:Name="InputDeviceComboBox" PlaceholderText="输入设备" />
+                    </StackPanel>
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="输出设备" Classes="latency-label" />
+                      <ComboBox x:Name="OutputDeviceComboBox" PlaceholderText="输出设备" />
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
 
-                <!-- Divider -->
-                <Border Height="1" Background="{StaticResource BorderSoftBrush}" Margin="8,4" />
+                <!-- Latency Monitoring -->
+                <Border Classes="right-section-card">
+                  <StackPanel Spacing="9">
+                    <TextBlock Text="时延监控" Classes="right-section-title" />
+                    <Border Classes="total-latency-card">
+                      <StackPanel Spacing="1">
+                        <TextBlock Text="总时延估计" Classes="latency-label" HorizontalAlignment="Center" />
+                        <TextBlock x:Name="TotalLatencyTextBlock" Classes="total-latency-value" Text="-- ms" />
+                      </StackPanel>
+                    </Border>
+                    <Grid ColumnDefinitions="*,*,*" ColumnSpacing="7">
+                      <Border Classes="compact-metric-card">
+                        <StackPanel Spacing="1" HorizontalAlignment="Center">
+                          <TextBlock Classes="latency-label" Text="网络 RTT" HorizontalAlignment="Center" />
+                          <TextBlock x:Name="NetworkLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
+                        </StackPanel>
+                      </Border>
+                      <Border Grid.Column="1" Classes="compact-metric-card">
+                        <StackPanel Spacing="1" HorizontalAlignment="Center">
+                          <TextBlock Classes="latency-label" Text="Server 队列" HorizontalAlignment="Center" />
+                          <TextBlock x:Name="ServerQueueLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
+                        </StackPanel>
+                      </Border>
+                      <Border Grid.Column="2" Classes="compact-metric-card">
+                        <StackPanel Spacing="1" HorizontalAlignment="Center">
+                          <TextBlock Classes="latency-label" Text="推理耗时" HorizontalAlignment="Center" />
+                          <TextBlock x:Name="InferenceLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
+                        </StackPanel>
+                      </Border>
+                    </Grid>
+                  </StackPanel>
+                </Border>
 
-                <!-- Latency Monitoring (horizontal) -->
-                <StackPanel Spacing="6">
-                  <TextBlock Text="时延监控"
-                             FontSize="12"
-                             FontWeight="SemiBold"
-                             Foreground="{StaticResource TextMutedBrush}" />
-                  <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="8">
-                    <Border Classes="metric-card" Padding="8">
-                      <StackPanel Spacing="2">
-                        <TextBlock Classes="latency-label" Text="总时延估计" />
-                        <TextBlock x:Name="TotalLatencyTextBlock" Classes="latency-value" Text="-- ms" />
-                      </StackPanel>
+                <!-- Waveform -->
+                <Border Classes="right-section-card">
+                  <StackPanel Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="7">
+                      <TextBlock Text="波形监视" Classes="right-section-title" VerticalAlignment="Center" />
+                      <Ellipse Grid.Column="1" Width="7" Height="7" Fill="#58A889" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="输入" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
+                      <Ellipse Grid.Column="3" Width="7" Height="7" Fill="#E87878" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="输出" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
+                    </Grid>
+                    <Border Classes="waveform-panel" Height="128">
+                      <Canvas x:Name="WaveformCanvas" />
                     </Border>
-                    <Border Grid.Column="1" Classes="metric-card" Padding="8">
-                      <StackPanel Spacing="2">
-                        <TextBlock Classes="latency-label" Text="网络 RTT" />
-                        <TextBlock x:Name="NetworkLatencyTextBlock" Classes="latency-value" Text="-- ms" />
-                      </StackPanel>
-                    </Border>
-                    <Border Grid.Column="2" Classes="metric-card" Padding="8">
-                      <StackPanel Spacing="2">
-                        <TextBlock Classes="latency-label" Text="Server 队列" />
-                        <TextBlock x:Name="ServerQueueLatencyTextBlock" Classes="latency-value" Text="-- ms" />
-                      </StackPanel>
-                    </Border>
-                    <Border Grid.Column="3" Classes="metric-card" Padding="8">
-                      <StackPanel Spacing="2">
-                        <TextBlock Classes="latency-label" Text="推理耗时" />
-                        <TextBlock x:Name="InferenceLatencyTextBlock" Classes="latency-value" Text="-- ms" />
-                      </StackPanel>
-                    </Border>
-                  </Grid>
-                </StackPanel>
-
-                <!-- 输入/输出波形显示 -->
-                <StackPanel Spacing="4">
-                  <Border Height="80" Background="{StaticResource SurfaceBrush}" CornerRadius="4" ClipToBounds="True">
-                    <Canvas x:Name="WaveformCanvas" />
-                  </Border>
-                  <Grid ColumnDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="12">
-                    <Ellipse Width="8" Height="8" Fill="#4CAF50" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1" Text="输入" FontSize="11" VerticalAlignment="Center" />
-                    <Ellipse Grid.Column="2" Width="8" Height="8" Fill="#F44336" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="3" Text="输出" FontSize="11" VerticalAlignment="Center" />
-                  </Grid>
-                </StackPanel>
+                  </StackPanel>
+                </Border>
 
               </StackPanel>
             </Border>

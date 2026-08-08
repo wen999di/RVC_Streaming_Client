@@ -5,60 +5,52 @@
              x:Class="ClientAvalonia.App"
              RequestedThemeVariant="Light">
   <Application.Resources>
-    <!-- Neutral / Canvas surfaces (H=82 constant, warm paper) -->
-    <local:Oklch x:Key="CanvasBrush"        L="0.956" C="0.010" H="82" />
-    <local:Oklch x:Key="CanvasSoftBrush"    L="0.972" C="0.008" H="82" />
-    <local:Oklch x:Key="SurfaceBrush"       L="0.980" C="0.007" H="82" />
-    <local:Oklch x:Key="SurfaceRaisedBrush" L="0.994" C="0.004" H="82" />
-    <local:Oklch x:Key="SurfaceWarmBrush"   L="0.958" C="0.015" H="78" />
-    <local:Oklch x:Key="SurfaceTintBrush"   L="0.950" C="0.018" H="198" />
-    <!-- Tab interaction surfaces stay in the warm-neutral family; teal remains an accent only. -->
-    <local:Oklch x:Key="MainTabHoverBrush"   L="0.962" C="0.012" H="82" />
-    <local:Oklch x:Key="MainTabPressedBrush" L="0.946" C="0.016" H="82" />
+    <!-- Scheme C: cream gray + soft teal-green -->
+    <local:Oklch x:Key="CanvasBrush"        L="0.958" C="0.009" H="82" />
+    <local:Oklch x:Key="CanvasSoftBrush"    L="0.973" C="0.007" H="82" />
+    <local:Oklch x:Key="SurfaceBrush"       L="0.986" C="0.006" H="82" />
+    <local:Oklch x:Key="SurfaceRaisedBrush" L="0.996" C="0.003" H="82" />
+    <local:Oklch x:Key="SurfaceWarmBrush"   L="0.969" C="0.011" H="82" />
+    <local:Oklch x:Key="SurfaceTintBrush"   L="0.956" C="0.020" H="171" />
+    <local:Oklch x:Key="MainTabHoverBrush"   L="0.967" C="0.010" H="82" />
+    <local:Oklch x:Key="MainTabPressedBrush" L="0.950" C="0.014" H="82" />
 
-    <!-- Glass (H=198, accent tint, deepened for visibility) -->
-    <local:Oklch x:Key="GlassBrush"         L="0.952" C="0.028" H="198" />
-    <local:Oklch x:Key="GlassStrongBrush"   L="0.975" C="0.016" H="198" />
-    <local:Oklch x:Key="GlassBorderBrush"   L="0.910" C="0.065" H="198" />
+    <!-- Soft glass with a restrained green tint -->
+    <local:Oklch x:Key="GlassBrush"         L="0.976" C="0.018" H="171" />
+    <local:Oklch x:Key="GlassStrongBrush"   L="0.987" C="0.011" H="171" />
+    <local:Oklch x:Key="GlassBorderBrush"   L="0.895" C="0.030" H="171" />
 
-    <!-- Borders (warm gray) -->
-    <local:Oklch x:Key="BorderSoftBrush"    L="0.856" C="0.024" H="82" />
-    <local:Oklch x:Key="BorderWarmBrush"    L="0.832" C="0.044" H="78" />
+    <!-- Neutral warm-gray borders and text -->
+    <local:Oklch x:Key="BorderSoftBrush"    L="0.872" C="0.013" H="82" />
+    <local:Oklch x:Key="BorderWarmBrush"    L="0.842" C="0.018" H="82" />
+    <local:Oklch x:Key="TextStrongBrush"    L="0.300" C="0.018" H="78" />
+    <local:Oklch x:Key="TextMutedBrush"     L="0.520" C="0.016" H="78" />
 
-    <!-- Text (warm dark, same-hue family) -->
-    <local:Oklch x:Key="TextStrongBrush"    L="0.268" C="0.020" H="82" />
-    <local:Oklch x:Key="TextMutedBrush"     L="0.500" C="0.020" H="82" />
+    <!-- Soft teal-green accent -->
+    <local:Oklch x:Key="AccentBrush"        L="0.575" C="0.090" H="171" />
+    <local:Oklch x:Key="AccentHoverBrush"   L="0.520" C="0.086" H="171" />
+    <local:Oklch x:Key="AccentSoftBrush"    L="0.936" C="0.032" H="171" />
+    <local:Oklch x:Key="AccentTextBrush"    L="0.455" C="0.072" H="171" />
 
-    <!-- Accent (H=198 constant, professional teal) -->
-    <local:Oklch x:Key="AccentBrush"        L="0.500" C="0.100" H="198" />
-    <local:Oklch x:Key="AccentHoverBrush"   L="0.455" C="0.095" H="198" />
-    <local:Oklch x:Key="AccentSoftBrush"    L="0.920" C="0.040" H="198" />
-    <local:Oklch x:Key="AccentTextBrush"    L="0.400" C="0.085" H="198" />
+    <!-- Secondary actions are intentionally neutral instead of amber -->
+    <local:Oklch x:Key="SecondaryBrush"      L="0.952" C="0.008" H="82" />
+    <local:Oklch x:Key="SecondaryHoverBrush" L="0.925" C="0.012" H="82" />
+    <local:Oklch x:Key="SecondaryTextBrush"  L="0.430" C="0.018" H="78" />
 
-    <!-- Secondary (H=55 constant, warm amber) -->
-    <local:Oklch x:Key="SecondaryBrush"     L="0.930" C="0.038" H="55" />
-    <local:Oklch x:Key="SecondaryHoverBrush" L="0.895" C="0.055" H="55" />
-    <local:Oklch x:Key="SecondaryTextBrush" L="0.460" C="0.095" H="55" />
-
-    <!-- Status / Danger -->
-    <local:Oklch x:Key="StatusWarmBrush"    L="0.520" C="0.100" H="55" />
-    <local:Oklch x:Key="DangerSoftBrush"    L="0.940" C="0.022" H="22" />
-    <local:Oklch x:Key="DangerBrush"        L="0.600" C="0.145" H="22" />
-    <local:Oklch x:Key="DangerActionHoverBrush" L="0.905" C="0.045" H="22" />
-    <!-- Opaque drag surfaces avoid non-monotonic alpha interpolation during transitions. -->
-    <local:Oklch x:Key="DragValidSoftBrush" L="0.940" C="0.028" H="245" />
-    <!-- Close button: same hue (H=22) so sRGB interpolation stays within red family -->
+    <!-- Status / danger -->
+    <local:Oklch x:Key="StatusWarmBrush"    L="0.590" C="0.090" H="171" />
+    <local:Oklch x:Key="DangerSoftBrush"    L="0.952" C="0.020" H="22" />
+    <local:Oklch x:Key="DangerBrush"        L="0.600" C="0.140" H="22" />
+    <local:Oklch x:Key="DangerActionHoverBrush" L="0.920" C="0.038" H="22" />
+    <local:Oklch x:Key="DragValidSoftBrush" L="0.944" C="0.026" H="171" />
     <local:Oklch x:Key="CloseHoverBrush"    L="0.555" C="0.210" H="22" />
     <local:Oklch x:Key="ClosePressedBrush"  L="0.455" C="0.200" H="22" />
 
-    <!-- AccentSoft variants (H=198 constant, hover stays close to active) -->
-    <local:Oklch x:Key="ChipActiveHoverBrush"   L="0.900" C="0.036" H="198" />
-    <local:Oklch x:Key="ToggleActiveHoverBrush" L="0.895" C="0.038" H="198" />
-
-    <!-- Surface variants (H=82 constant) -->
-    <local:Oklch x:Key="SurfaceWarmHoverBrush"   L="0.968" C="0.013" H="82" />
-    <local:Oklch x:Key="SurfaceRaisedHoverBrush" L="0.982" C="0.004" H="82" />
-    <local:Oklch x:Key="ItemCardHoverBrush"      L="0.938" C="0.018" H="82" />
+    <local:Oklch x:Key="ChipActiveHoverBrush"   L="0.912" C="0.036" H="171" />
+    <local:Oklch x:Key="ToggleActiveHoverBrush" L="0.908" C="0.038" H="171" />
+    <local:Oklch x:Key="SurfaceWarmHoverBrush"   L="0.980" C="0.009" H="82" />
+    <local:Oklch x:Key="SurfaceRaisedHoverBrush" L="0.986" C="0.005" H="82" />
+    <local:Oklch x:Key="ItemCardHoverBrush"      L="0.950" C="0.014" H="82" />
     <FontFamily x:Key="AppFontFamily">avares://Client.Avalonia/Fonts#HarmonyOS Sans SC</FontFamily>
   </Application.Resources>
   <Application.Styles>
@@ -88,8 +80,8 @@
       <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="12" />
-      <Setter Property="BoxShadow" Value="0 12 32 0 #22008885" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="BoxShadow" Value="0 10 28 0 #16000000" />
       <Setter Property="Opacity" Value="1" />
       <Setter Property="Transitions">
         <Transitions>
@@ -101,9 +93,9 @@
     </Style>
     <Style Selector="Border.section-card">
       <Setter Property="Background" Value="{StaticResource SurfaceWarmBrush}" />
-      <Setter Property="BorderBrush" Value="{StaticResource BorderWarmBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="CornerRadius" Value="12" />
       <Setter Property="Opacity" Value="1" />
       <Setter Property="Transitions">
         <Transitions>
@@ -246,8 +238,8 @@
       <Setter Property="Background" Value="{StaticResource GlassBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource GlassBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="12" />
-      <Setter Property="BoxShadow" Value="0 10 28 0 #18008885" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="BoxShadow" Value="0 10 26 0 #12000000" />
       <Setter Property="Transitions">
         <Transitions>
           <BrushTransition Property="Background" Duration="0:0:0.13" />
@@ -357,7 +349,7 @@
       <Setter Property="Background" Value="{StaticResource AccentBrush}" />
       <Setter Property="Foreground" Value="White" />
       <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="CornerRadius" Value="10" />
       <Setter Property="Padding" Value="14,9" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -382,9 +374,9 @@
     <Style Selector="Button.secondary-action">
       <Setter Property="Background" Value="{StaticResource SecondaryBrush}" />
       <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
-      <Setter Property="BorderBrush" Value="{StaticResource BorderWarmBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="CornerRadius" Value="10" />
       <Setter Property="Padding" Value="12,8" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -598,12 +590,12 @@
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Padding" Value="17,8" />
+      <Setter Property="Padding" Value="16,7" />
       <Setter Property="Margin" Value="0,0,6,0" />
       <Setter Property="MinHeight" Value="40" />
       <Setter Property="HorizontalContentAlignment" Value="Center" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
-      <Setter Property="FontSize" Value="16" />
+      <Setter Property="FontSize" Value="15" />
       <Setter Property="FontWeight" Value="Normal" />
       <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
       <Setter Property="CornerRadius" Value="8" />
@@ -976,6 +968,48 @@
     </Style>
     <Style Selector="Button.titlebar-close:pressed mi|MaterialIcon">
       <Setter Property="Foreground" Value="White" />
+    </Style>
+
+    <!-- Scheme C right-side hierarchy -->
+    <Style Selector="Border.right-section-card">
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Padding" Value="14" />
+      <Setter Property="BoxShadow" Value="0 3 12 0 #0B000000" />
+    </Style>
+    <Style Selector="TextBlock.right-section-title">
+      <Setter Property="Foreground" Value="{StaticResource TextStrongBrush}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Border.total-latency-card">
+      <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource GlassBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="11" />
+      <Setter Property="Padding" Value="12,10" />
+    </Style>
+    <Style Selector="TextBlock.total-latency-value">
+      <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
+      <Setter Property="FontSize" Value="30" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.compact-metric-card">
+      <Setter Property="Background" Value="{StaticResource CanvasSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Padding" Value="8,7" />
+    </Style>
+    <Style Selector="Border.waveform-panel">
+      <Setter Property="Background" Value="{StaticResource CanvasSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="ClipToBounds" Value="True" />
     </Style>
   </Application.Styles>
 </Application>
