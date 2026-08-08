@@ -318,10 +318,18 @@
                       <!-- Advanced Inference Params (Expandable) -->
                       <Border Classes="section-card" Padding="14">
                         <StackPanel Spacing="10">
-                          <Button x:Name="InferenceExpanderToggle"
-                                  Classes="expander-toggle"
-                                  Click="InferenceExpander_OnClick"
-                                  Content="▼ 高级推理参数" />
+                          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="7">
+                            <mi:MaterialIcon Kind="CogBox"
+                                             Width="17"
+                                             Height="17"
+                                             Foreground="{StaticResource AccentBrush}"
+                                             VerticalAlignment="Center" />
+                            <Button x:Name="InferenceExpanderToggle"
+                                    Grid.Column="1"
+                                    Classes="expander-toggle"
+                                    Click="InferenceExpander_OnClick"
+                                    Content="▼ 高级推理参数" />
+                          </Grid>
                           <StackPanel x:Name="InferenceExpanderPanel"
                                       Classes="animated-panel"
                                       Spacing="10">
@@ -439,10 +447,18 @@
                       <!-- Buffer & Network (Expandable) -->
                       <Border Classes="section-card" Padding="14">
                         <StackPanel Spacing="10">
-                          <Button x:Name="BufferExpanderToggle"
-                                  Classes="expander-toggle"
-                                  Click="BufferExpander_OnClick"
-                                  Content="▼ 缓冲与网络" />
+                          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="7">
+                            <mi:MaterialIcon Kind="Wifi"
+                                             Width="17"
+                                             Height="17"
+                                             Foreground="{StaticResource AccentBrush}"
+                                             VerticalAlignment="Center" />
+                            <Button x:Name="BufferExpanderToggle"
+                                    Grid.Column="1"
+                                    Classes="expander-toggle"
+                                    Click="BufferExpander_OnClick"
+                                    Content="▼ 缓冲与网络" />
+                          </Grid>
                           <StackPanel x:Name="BufferExpanderPanel"
                                       Classes="animated-panel"
                                       Spacing="12">
@@ -974,8 +990,23 @@
                         CornerRadius="11"
                         FontSize="22"
                         HorizontalAlignment="Stretch"
-                        Click="StreamingToggleButton_OnClick"
-                        Content="开始变声" />
+                        Click="StreamingToggleButton_OnClick">
+                  <StackPanel Orientation="Horizontal"
+                              Spacing="10"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center">
+                    <mi:MaterialIcon Kind="Microphone"
+                                     Width="24"
+                                     Height="24"
+                                     Foreground="White"
+                                     VerticalAlignment="Center" />
+                    <TextBlock Text="开始变声"
+                               Foreground="White"
+                               FontSize="22"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                  </StackPanel>
+                </Button>
 
                 <!-- Sync Status -->
                 <Border x:Name="SyncErrorPanel"
@@ -1071,9 +1102,9 @@
                         <TextBlock Text="波形监视" Classes="right-section-title" VerticalAlignment="Center" />
                       </StackPanel>
                       <Ellipse Grid.Column="1" Width="7" Height="7" Fill="#58A889" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="2" Text="输入" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="输入（原声）" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
                       <Ellipse Grid.Column="3" Width="7" Height="7" Fill="#E87878" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="4" Text="输出" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="4" Text="输出（变声后）" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
                     </Grid>
                     <Border Classes="waveform-panel" Height="128">
                       <Canvas x:Name="WaveformCanvas" />
