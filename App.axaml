@@ -10,15 +10,15 @@
     <local:Oklch x:Key="CanvasSoftBrush"    L="0.973" C="0.007" H="82" />
     <local:Oklch x:Key="SurfaceBrush"       L="0.986" C="0.006" H="82" />
     <local:Oklch x:Key="SurfaceRaisedBrush" L="0.996" C="0.003" H="82" />
-    <local:Oklch x:Key="SurfaceWarmBrush"   L="0.969" C="0.011" H="82" />
+    <local:Oklch x:Key="SurfaceWarmBrush"   L="0.978" C="0.007" H="82" />
     <local:Oklch x:Key="SurfaceTintBrush"   L="0.956" C="0.020" H="171" />
     <local:Oklch x:Key="MainTabHoverBrush"   L="0.967" C="0.010" H="82" />
     <local:Oklch x:Key="MainTabPressedBrush" L="0.950" C="0.014" H="82" />
 
     <!-- Soft glass with a restrained green tint -->
-    <local:Oklch x:Key="GlassBrush"         L="0.976" C="0.018" H="171" />
-    <local:Oklch x:Key="GlassStrongBrush"   L="0.987" C="0.011" H="171" />
-    <local:Oklch x:Key="GlassBorderBrush"   L="0.895" C="0.030" H="171" />
+    <local:Oklch x:Key="GlassBrush"         L="0.982" C="0.010" H="171" />
+    <local:Oklch x:Key="GlassStrongBrush"   L="0.991" C="0.008" H="171" />
+    <local:Oklch x:Key="GlassBorderBrush"   L="0.905" C="0.026" H="171" />
 
     <!-- Neutral warm-gray borders and text -->
     <local:Oklch x:Key="BorderSoftBrush"    L="0.872" C="0.013" H="82" />
@@ -29,7 +29,7 @@
     <!-- Soft teal-green accent -->
     <local:Oklch x:Key="AccentBrush"        L="0.575" C="0.090" H="171" />
     <local:Oklch x:Key="AccentHoverBrush"   L="0.520" C="0.086" H="171" />
-    <local:Oklch x:Key="AccentSoftBrush"    L="0.936" C="0.032" H="171" />
+    <local:Oklch x:Key="AccentSoftBrush"    L="0.948" C="0.027" H="171" />
     <local:Oklch x:Key="AccentTextBrush"    L="0.455" C="0.072" H="171" />
 
     <!-- Secondary actions are intentionally neutral instead of amber -->
@@ -54,7 +54,11 @@
     <FontFamily x:Key="AppFontFamily">avares://Client.Avalonia/Fonts#HarmonyOS Sans SC</FontFamily>
   </Application.Resources>
   <Application.Styles>
-    <FluentTheme />
+    <FluentTheme>
+      <FluentTheme.Palettes>
+        <ColorPaletteResources x:Key="Light" Accent="#4D9A86" />
+      </FluentTheme.Palettes>
+    </FluentTheme>
     <mi:MaterialIconStyles />
     <!-- Fix MaterialIcon background artifact -->
     <Style Selector="mi|MaterialIcon">
@@ -92,10 +96,11 @@
       </Setter>
     </Style>
     <Style Selector="Border.section-card">
-      <Setter Property="Background" Value="{StaticResource SurfaceWarmBrush}" />
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="BoxShadow" Value="0 3 12 0 #0B000000" />
       <Setter Property="Opacity" Value="1" />
       <Setter Property="Transitions">
         <Transitions>
@@ -445,6 +450,7 @@
       <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="Foreground" Value="{StaticResource TextStrongBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
       <Setter Property="VerticalContentAlignment" Value="Top" />
       <Setter Property="Transitions">
         <Transitions>
@@ -460,6 +466,7 @@
       <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="Foreground" Value="{StaticResource TextStrongBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
       <Setter Property="Transitions">
         <Transitions>
@@ -689,7 +696,8 @@
       <Setter Property="Foreground" Value="{StaticResource TextStrongBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="12" />
-      <Setter Property="Padding" Value="14,8" />
+      <Setter Property="Padding" Value="16,8" />
+      <Setter Property="MinWidth" Value="96" />
       <Setter Property="FontSize" Value="13" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Cursor" Value="Hand" />
@@ -970,7 +978,28 @@
       <Setter Property="Foreground" Value="White" />
     </Style>
 
-    <!-- Scheme C right-side hierarchy -->
+    <!-- Scheme C layout / hierarchy -->
+    <Style Selector="Border.connection-card">
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="BoxShadow" Value="0 5 18 0 #10000000" />
+    </Style>
+    <Style Selector="Border.workspace-card">
+      <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="BoxShadow" Value="0 8 26 0 #12000000" />
+    </Style>
+    <Style Selector="Border.right-panel">
+      <Setter Property="Background" Value="{StaticResource GlassBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource GlassBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="16" />
+      <Setter Property="BoxShadow" Value="0 8 26 0 #10000000" />
+    </Style>
     <Style Selector="Border.right-section-card">
       <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
@@ -984,21 +1013,34 @@
       <Setter Property="FontSize" Value="13" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
-    <Style Selector="Border.total-latency-card">
+    <Style Selector="Border.section-icon">
+      <Setter Property="Width" Value="28" />
+      <Setter Property="Height" Value="28" />
+      <Setter Property="CornerRadius" Value="14" />
       <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
-      <Setter Property="BorderBrush" Value="{StaticResource GlassBorderBrush}" />
+    </Style>
+    <Style Selector="mi|MaterialIcon.section-icon-glyph">
+      <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+      <Setter Property="Width" Value="16" />
+      <Setter Property="Height" Value="16" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.total-latency-card">
+      <Setter Property="Background" Value="{StaticResource CanvasSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="11" />
       <Setter Property="Padding" Value="12,10" />
     </Style>
     <Style Selector="TextBlock.total-latency-value">
       <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
-      <Setter Property="FontSize" Value="30" />
+      <Setter Property="FontSize" Value="31" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="HorizontalAlignment" Value="Center" />
     </Style>
     <Style Selector="Border.compact-metric-card">
-      <Setter Property="Background" Value="{StaticResource CanvasSoftBrush}" />
+      <Setter Property="Background" Value="{StaticResource SurfaceWarmBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="9" />
@@ -1010,6 +1052,13 @@
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="10" />
       <Setter Property="ClipToBounds" Value="True" />
+    </Style>
+    <Style Selector="Slider">
+      <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+      <Setter Property="Background" Value="{StaticResource BorderSoftBrush}" />
+    </Style>
+    <Style Selector="ToggleSwitch">
+      <Setter Property="Foreground" Value="{StaticResource TextStrongBrush}" />
     </Style>
   </Application.Styles>
 </Application>

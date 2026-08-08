@@ -80,13 +80,24 @@
           <Border Background="Transparent"
                   PointerPressed="TitleBar_PointerPressed" />
           <!-- Window title -->
-          <TextBlock Text="RVC Streaming Client"
-                     VerticalAlignment="Center"
-                     Margin="16,0,0,0"
-                     FontSize="13"
-                     FontWeight="SemiBold"
-                     Foreground="{StaticResource TextMutedBrush}"
-                     IsHitTestVisible="False" />
+          <StackPanel Orientation="Horizontal"
+                      Spacing="8"
+                      VerticalAlignment="Center"
+                      Margin="16,0,0,0"
+                      IsHitTestVisible="False">
+            <Border Width="26" Height="26" CornerRadius="13" Background="{StaticResource AccentSoftBrush}">
+              <mi:MaterialIcon Kind="Waveform"
+                               Width="15" Height="15"
+                               Foreground="{StaticResource AccentBrush}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+            </Border>
+            <TextBlock Text="RVC Streaming Client"
+                       VerticalAlignment="Center"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="{StaticResource TextStrongBrush}" />
+          </StackPanel>
           <!-- Window control buttons (minimize/maximize — inside OuterBorder for proper border containment) -->
           <StackPanel Orientation="Horizontal"
                       HorizontalAlignment="Right"
@@ -110,46 +121,62 @@
                   VerticalAlignment="Bottom" />
         </Grid>
 
-        <Grid Margin="24,68,24,24" ColumnDefinitions="1.75*,1.0*" ColumnSpacing="20">
+        <Grid Margin="22,66,22,22" ColumnDefinitions="1.68*,1.0*" ColumnSpacing="18">
 
           <!-- ===== LEFT COLUMN ===== -->
-          <Border Grid.Column="0" Classes="surface-card" Padding="20">
-            <Grid RowDefinitions="Auto,Auto,*" RowSpacing="16">
+          <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="16">
 
-              <!-- Connection Gate (expanded: disconnected) -->
-              <Border x:Name="ConnectionGatePanel"
-                      Grid.Row="0"
-                      Classes="glass-panel animated-panel"
-                      Padding="16">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+            <!-- Connection card: independent from the main workspace, matching scheme C -->
+            <Border x:Name="ConnectionGatePanel"
+                    Grid.Row="0"
+                    Classes="connection-card animated-panel"
+                    Padding="18,14">
+              <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+                <StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+                  <Border Classes="section-icon">
+                    <mi:MaterialIcon Classes="section-icon-glyph" Kind="LinkBoxVariantOutline" />
+                  </Border>
+                  <TextBlock Text="连接"
+                             FontSize="14"
+                             FontWeight="SemiBold"
+                             Foreground="{StaticResource TextStrongBrush}"
+                             VerticalAlignment="Center" />
+                </StackPanel>
+                <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
                   <TextBox x:Name="ServerUriTextBox"
                            PlaceholderText="ws://127.0.0.1:8765/"
                            Text=""
                            FontSize="14"
-                           Padding="13,10"
-                           CornerRadius="10"
+                           Padding="13,9"
+                           CornerRadius="9"
                            VerticalAlignment="Center" />
                   <Button x:Name="ConnectionToggleButton"
                           Grid.Column="1"
                           Classes="primary-action"
-                          Width="90"
+                          Width="92"
+                          Height="40"
                           VerticalAlignment="Center"
                           Click="ConnectionToggleButton_OnClick"
                           Content="连接" />
                 </Grid>
-              </Border>
+              </Grid>
+            </Border>
 
-
+            <!-- Main workspace card -->
+            <Border Grid.Row="1" Classes="workspace-card" Padding="0">
+              <Grid RowDefinitions="Auto,*">
 
         <!-- Main Tabs Header -->
               <Grid x:Name="MainTabsHeaderGrid"
-                    Grid.Row="1"
+                    Grid.Row="0"
                     RowDefinitions="Auto,2"
-                    ColumnDefinitions="Auto,Auto,Auto,*"
+                    ColumnDefinitions="1*,1*,1*,1.8*"
                     RowSpacing="6"
-                    Margin="0,0,0,4">
+                    ColumnSpacing="4"
+                    Margin="12,10,12,2">
     <Button x:Name="MainTabHeaderBtn0"
       Grid.Row="0"
+      HorizontalAlignment="Stretch"
       Grid.Column="0"
       Classes="main-tab-header active"
       Content="实时变声"
@@ -157,6 +184,7 @@
       Click="MainTabHeaderButton_OnClick" />
     <Button x:Name="MainTabHeaderBtn1"
       Grid.Row="0"
+      HorizontalAlignment="Stretch"
       Grid.Column="1"
       Classes="main-tab-header"
       Content="模型与文件"
@@ -164,11 +192,17 @@
       Click="MainTabHeaderButton_OnClick" />
     <Button x:Name="MainTabHeaderBtn2"
       Grid.Row="0"
+      HorizontalAlignment="Stretch"
       Grid.Column="2"
       Classes="main-tab-header"
       Content="日志"
       Tag="2"
       Click="MainTabHeaderButton_OnClick" />
+    <Border Grid.Row="1"
+      Grid.ColumnSpan="4"
+      Height="1"
+      Background="{StaticResource BorderSoftBrush}"
+      VerticalAlignment="Bottom" />
     <Border x:Name="MainTabUnderline"
       Grid.Row="1"
       Grid.ColumnSpan="4"
@@ -180,7 +214,7 @@
         </Grid>
 
         <!-- Main Tabs -->
-        <TabControl x:Name="MainTabControl" Grid.Row="2" Classes="main-tabs">
+        <TabControl x:Name="MainTabControl" Grid.Row="1" Classes="main-tabs" Margin="12,0,12,12">
 
                 <!-- ===== TAB 0: 实时变声 ===== -->
                 <TabItem Header="实时变声" Classes="main-tab">
@@ -191,10 +225,16 @@
                       <!-- Voice Model Selection (chips) -->
                       <Border Classes="section-card" Padding="16">
                         <StackPanel Spacing="10">
-                          <TextBlock Text="音色模型"
-                                     FontSize="14"
-                                     FontWeight="SemiBold"
-                                     Foreground="{StaticResource TextStrongBrush}" />
+                          <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <Border Classes="section-icon">
+                              <mi:MaterialIcon Classes="section-icon-glyph" Kind="CubeOutline" />
+                            </Border>
+                            <TextBlock Text="音色模型"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextStrongBrush}"
+                                       VerticalAlignment="Center" />
+                          </StackPanel>
                           <ItemsControl x:Name="VoiceModelChipsControl">
                             <ItemsControl.ItemsPanel>
                               <ItemsPanelTemplate>
@@ -230,11 +270,14 @@
                       </Border>
 
                       <!-- Core Tuning Params (horizontal) -->
-                        <Border Classes="section-card" Padding="16">
-                          <Grid ColumnDefinitions="1*,1*,1*" ColumnSpacing="20">
+                        <Border Classes="section-card" Padding="14">
+                          <Grid ColumnDefinitions="1*,1*,1*" ColumnSpacing="18">
                             <StackPanel Spacing="4">
                                 <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
-                                <TextBlock Text="音调调整" FontWeight="SemiBold" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                  <mi:MaterialIcon Kind="MusicNote" Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
+                                  <TextBlock Text="音调调整" FontWeight="SemiBold" />
+                                </StackPanel>
                                 <TextBlock x:Name="F0UpKeyValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                            DoubleTapped="SliderValueText_DoubleTapped" Tag="F0UpKeySlider" Cursor="Hand" />
                                 <TextBox x:Name="F0UpKeyValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
@@ -245,7 +288,10 @@
                             </StackPanel>
                             <StackPanel Grid.Column="1" Spacing="4">
                                 <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
-                                <TextBlock Text="索引比率" FontWeight="SemiBold" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                  <mi:MaterialIcon Kind="Equalizer" Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
+                                  <TextBlock Text="索引比率" FontWeight="SemiBold" />
+                                </StackPanel>
                                 <TextBlock x:Name="IndexRateValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                            DoubleTapped="SliderValueText_DoubleTapped" Tag="IndexRateSlider" Cursor="Hand" />
                                 <TextBox x:Name="IndexRateValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
@@ -255,7 +301,10 @@
                             </StackPanel>
                             <StackPanel Grid.Column="2" Spacing="4">
                                 <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
-                                <TextBlock Text="共振峰偏移" FontWeight="SemiBold" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                  <mi:MaterialIcon Kind="Waveform" Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
+                                  <TextBlock Text="共振峰偏移" FontWeight="SemiBold" />
+                                </StackPanel>
                                 <TextBlock x:Name="FormantValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                            DoubleTapped="SliderValueText_DoubleTapped" Tag="FormantSlider" Cursor="Hand" />
                                 <TextBox x:Name="FormantValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
@@ -267,7 +316,7 @@
                         </Border>
 
                       <!-- Advanced Inference Params (Expandable) -->
-                      <Border Classes="section-card" Padding="16">
+                      <Border Classes="section-card" Padding="14">
                         <StackPanel Spacing="10">
                           <Button x:Name="InferenceExpanderToggle"
                                   Classes="expander-toggle"
@@ -276,9 +325,9 @@
                           <StackPanel x:Name="InferenceExpanderPanel"
                                       Classes="animated-panel"
                                       Spacing="10">
-                            <Grid ColumnDefinitions="1*,1*"
-                                  RowDefinitions="Auto,Auto,Auto,Auto,Auto"
-                                  ColumnSpacing="20"
+                            <Grid ColumnDefinitions="1*,1*,1*"
+                                  RowDefinitions="Auto,Auto,Auto"
+                                  ColumnSpacing="18"
                                   RowSpacing="10">
                               <StackPanel Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
@@ -302,7 +351,7 @@
                                 </Grid>
                                 <Slider x:Name="CrossfadeSlider" Minimum="10" Maximum="40" TickFrequency="5" ValueChanged="CrossfadeSlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="1" Spacing="3">
+                              <StackPanel Grid.Column="2" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="额外推理时间" />
                                   <TextBlock x:Name="ExtraTimeValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -313,7 +362,7 @@
                                 </Grid>
                                 <Slider x:Name="ExtraTimeSlider" Minimum="200" Maximum="4000" TickFrequency="50" ValueChanged="ExtraTimeSlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="2" Spacing="3">
+                              <StackPanel Grid.Row="1" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="静音阈值" />
                                   <TextBlock x:Name="SilenceDbValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -324,7 +373,7 @@
                                 </Grid>
                                 <Slider x:Name="SilenceDbSlider" Minimum="-90" Maximum="-20" TickFrequency="1" ValueChanged="SilenceDbSlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="2" Grid.Column="1" Spacing="3">
+                              <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="静音门衰减" />
                                   <TextBlock x:Name="SilenceGateAttenValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -334,7 +383,7 @@
                                 </Grid>
                                 <Slider x:Name="SilenceGateAttenSlider" Minimum="0" Maximum="1" TickFrequency="0.05" ValueChanged="SilenceGateAttenSlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="3" Spacing="6">
+                              <StackPanel Grid.Row="2" Spacing="6">
                                 <TextBlock Text="降噪" FontWeight="SemiBold" Margin="0,0,0,4" />
                                 <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
                                   <ToggleSwitch x:Name="InputNoiseReduceSwitch"
@@ -348,7 +397,7 @@
                                                 IsCheckedChanged="NoiseReduce_OnChange" />
                                 </Grid>
                               </StackPanel>
-                              <StackPanel Grid.Row="3" Grid.Column="1" Spacing="6">
+                              <StackPanel Grid.Row="1" Grid.Column="2" Spacing="6">
                                 <TextBlock Text="F0 推理方法" FontWeight="SemiBold" />
                                 <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="4">
                                   <Button x:Name="F0RmvpeBtn"
@@ -362,7 +411,7 @@
                                           Content="fcpe" />
                                 </Grid>
                               </StackPanel>
-                              <StackPanel Grid.Row="4" Spacing="3">
+                              <StackPanel Grid.Row="2" Grid.Column="1" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="降噪强度" />
                                   <TextBlock x:Name="NoiseReduceStrengthValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -372,7 +421,7 @@
                                 </Grid>
                                 <Slider x:Name="NoiseReduceStrengthSlider" Minimum="0" Maximum="1" TickFrequency="0.05" ValueChanged="NoiseReduceStrengthSlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="4" Grid.Column="1" Spacing="3">
+                              <StackPanel Grid.Row="2" Grid.Column="2" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="RMS 混合比率" />
                                   <TextBlock x:Name="RmsMixRateValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -388,7 +437,7 @@
                       </Border>
 
                       <!-- Buffer & Network (Expandable) -->
-                      <Border Classes="section-card" Padding="16">
+                      <Border Classes="section-card" Padding="14">
                         <StackPanel Spacing="10">
                           <Button x:Name="BufferExpanderToggle"
                                   Classes="expander-toggle"
@@ -415,7 +464,7 @@
                             </Grid>
 
                             <StackPanel x:Name="AutoBufferPanel" Classes="animated-panel" Spacing="10">
-                              <Grid ColumnDefinitions="1*,1*" RowDefinitions="Auto,Auto" ColumnSpacing="20" RowSpacing="10">
+                              <Grid ColumnDefinitions="1*,1*,1*,1*" RowDefinitions="Auto" ColumnSpacing="14" RowSpacing="10">
                                 <StackPanel Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto">
                                     <TextBlock Text="抖动系数" />
@@ -436,7 +485,7 @@
                                   </Grid>
                                   <Slider x:Name="JitterAlphaSlider" Minimum="0.80" Maximum="0.99" TickFrequency="0.01" ValueChanged="JitterAlphaSlider_OnValueChanged" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="1" Spacing="3">
+                                <StackPanel Grid.Column="2" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                     <TextBlock Text="自适应最大缓冲" />
                                     <TextBlock x:Name="JitterMaxBufferValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -447,7 +496,7 @@
                                   </Grid>
                                   <Slider x:Name="JitterMaxBufferSlider" Minimum="20" Maximum="500" TickFrequency="5" ValueChanged="JitterMaxBufferSlider_OnValueChanged" />
                                 </StackPanel>
-                                <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3">
+                                <StackPanel Grid.Column="3" Spacing="3">
                                   <Grid ColumnDefinitions="*,Auto,Auto">
                                     <TextBlock Text="最小保护缓冲" />
                                     <TextBlock x:Name="MinBufferValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -478,7 +527,7 @@
                               </Border>
                             </StackPanel>
 
-                            <Grid ColumnDefinitions="1*,1*" RowDefinitions="Auto,Auto" ColumnSpacing="20" RowSpacing="10">
+                            <Grid ColumnDefinitions="1*,1*,1*" RowDefinitions="Auto,Auto" ColumnSpacing="14" RowSpacing="10">
                               <StackPanel Spacing="3">
                                 <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="最大丢弃阈值" />
@@ -501,7 +550,7 @@
                                 </Grid>
                                 <Slider x:Name="BufferCapacitySlider" Minimum="1000" Maximum="8000" TickFrequency="100" ValueChanged="BufferCapacitySlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="1" Spacing="3">
+                              <StackPanel Grid.Column="2" Spacing="3">
                                 <Grid ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="客户端发送切片" />
                                   <TextBlock x:Name="NetworkSliceValueText" Grid.Column="1" Classes="slider-value" Text="--"
@@ -872,16 +921,21 @@
                 </TabItem>
 
               </TabControl>
-            </Grid>
-          </Border>
+              </Grid>
+            </Border>
+          </Grid>
 
           <!-- ===== RIGHT COLUMN (Scheme C visual hierarchy) ===== -->
-          <StackPanel Grid.Column="1" Spacing="16">
-            <Border Classes="glass-panel" Padding="16">
+          <StackPanel Grid.Column="1" Spacing="14">
+            <Border Classes="right-panel" Padding="14">
               <StackPanel Spacing="12">
 
                 <!-- Connection / model status -->
-                <Border Classes="status-pill" HorizontalAlignment="Stretch" Padding="12,7">
+                <Border Classes="status-pill"
+                        HorizontalAlignment="Left"
+                        MinWidth="300"
+                        MaxWidth="420"
+                        Padding="14,7">
                   <Grid>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
                       <TextBlock x:Name="GlobalStatusTextBlock"
@@ -917,6 +971,7 @@
                 <Button x:Name="StreamingToggleButton"
                         Classes="primary-action"
                         Height="64"
+                        CornerRadius="11"
                         FontSize="22"
                         HorizontalAlignment="Stretch"
                         Click="StreamingToggleButton_OnClick"
@@ -945,21 +1000,28 @@
                 <Border Classes="right-section-card">
                   <StackPanel Spacing="9">
                     <Grid ColumnDefinitions="*,Auto">
-                      <TextBlock Text="音频设备" Classes="right-section-title" VerticalAlignment="Center" />
+                      <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <mi:MaterialIcon Kind="VolumeHigh" Width="17" Height="17" Foreground="{StaticResource AccentBrush}" />
+                        <TextBlock Text="音频设备" Classes="right-section-title" VerticalAlignment="Center" />
+                      </StackPanel>
                       <Button Grid.Column="1"
                               Classes="secondary-action"
                               Click="RefreshAudioDevices_OnClick"
-                              Content="刷新"
                               Padding="9,5"
-                              FontSize="11" />
+                              FontSize="11">
+                        <StackPanel Orientation="Horizontal" Spacing="5">
+                          <mi:MaterialIcon Kind="RefreshCircle" Width="14" Height="14" />
+                          <TextBlock Text="刷新" VerticalAlignment="Center" />
+                        </StackPanel>
+                      </Button>
                     </Grid>
                     <StackPanel Spacing="4">
                       <TextBlock Text="输入设备" Classes="latency-label" />
-                      <ComboBox x:Name="InputDeviceComboBox" PlaceholderText="输入设备" />
+                      <ComboBox x:Name="InputDeviceComboBox" PlaceholderText="输入设备" MinHeight="38" />
                     </StackPanel>
                     <StackPanel Spacing="4">
                       <TextBlock Text="输出设备" Classes="latency-label" />
-                      <ComboBox x:Name="OutputDeviceComboBox" PlaceholderText="输出设备" />
+                      <ComboBox x:Name="OutputDeviceComboBox" PlaceholderText="输出设备" MinHeight="38" />
                     </StackPanel>
                   </StackPanel>
                 </Border>
@@ -967,7 +1029,10 @@
                 <!-- Latency Monitoring -->
                 <Border Classes="right-section-card">
                   <StackPanel Spacing="9">
-                    <TextBlock Text="时延监控" Classes="right-section-title" />
+                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                      <mi:MaterialIcon Kind="ClockFast" Width="17" Height="17" Foreground="{StaticResource AccentBrush}" />
+                      <TextBlock Text="时延监控" Classes="right-section-title" VerticalAlignment="Center" />
+                    </StackPanel>
                     <Border Classes="total-latency-card">
                       <StackPanel Spacing="1">
                         <TextBlock Text="总时延估计" Classes="latency-label" HorizontalAlignment="Center" />
@@ -1001,7 +1066,10 @@
                 <Border Classes="right-section-card">
                   <StackPanel Spacing="8">
                     <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="7">
-                      <TextBlock Text="波形监视" Classes="right-section-title" VerticalAlignment="Center" />
+                      <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                        <mi:MaterialIcon Kind="Waveform" Width="17" Height="17" Foreground="{StaticResource AccentBrush}" />
+                        <TextBlock Text="波形监视" Classes="right-section-title" VerticalAlignment="Center" />
+                      </StackPanel>
                       <Ellipse Grid.Column="1" Width="7" Height="7" Fill="#58A889" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="输入" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
                       <Ellipse Grid.Column="3" Width="7" Height="7" Fill="#E87878" VerticalAlignment="Center" />
