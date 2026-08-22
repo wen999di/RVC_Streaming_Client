@@ -192,6 +192,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, object> _lastSentConfig = new();
     private long _configSeq;
     private long _lastSentConfigSeq;
+    private string? _lastConfigHashRetry;
     private DispatcherTimer? _realtimeConfigDebounceTimer;
     private int _realtimeConfigDebouncePending;
 
@@ -2077,10 +2078,19 @@ public partial class MainWindow : Window
                     {
                         var serverHash = hashElement.GetString() ?? string.Empty;
                         var localHash = ComputeConfigHash(_lastSentConfig);
-                        if (!string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase))
+                        if (string.Equals(serverHash, localHash, StringComparison.OrdinalIgnoreCase))
                         {
-                            Log("[WARN] 配置不一致，正在强制同步...");
+                            _lastConfigHashRetry = null;
+                        }
+                        else if (!string.Equals(_lastConfigHashRetry, localHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _lastConfigHashRetry = localHash;
+                            Log("[WARN] 配置校验不一致，自动重试一次...");
                             _ = SendConfigurationAsync(true);
+                        }
+                        else
+                        {
+                            Log("[WARN] 配置校验仍不一致，已停止自动重试以避免请求风暴。");
                         }
                     }
                     break;
@@ -3335,7 +3345,11 @@ public partial class MainWindow : Window
         if (_waveformTimer != null) return;
 
         _waveformTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-        _waveformTimer.Tick += (_, _) => DrawWaveform();
+        _waveformTimer.Tick += (_, _) =>
+        {
+            ExtendWaveformWithSilence();
+            DrawWaveform();
+        };
         _waveformTimer.Start();
     }
 
@@ -3366,6 +3380,72 @@ public partial class MainWindow : Window
         _waveformDisplayLastTickNs = GetMonoNs();
         DrawWaveform();
     }
+
+    private void ExtendWaveformWithSilence()
+    {
+        if (!_isPlaying)
+        {
+            return;
+        }
+
+        long nowNs = GetMonoNs();
+        long lastWallNs = Interlocked.Read(ref _waveformLastDataWallNs);
+        if (lastWallNs <= 0)
+        {
+            Interlocked.Exchange(ref _waveformLastDataWallNs, nowNs);
+            return;
+        }
+
+        long missingFrameCount = (nowNs - lastWallNs) / WaveformFrameDurationNs - 1;
+        if (missingFrameCount <= 0)
+        {
+            return;
+        }
+
+        int maximumFrames = (int)(WaveformWindowNs / WaveformFrameDurationNs) + 2;
+        int framesToAppend = (int)Math.Min(missingFrameCount, maximumFrames);
+
+        lock (_waveformOutputLock)
+        {
+            long timelineNs = _waveformPlaybackTimelineNs;
+            if (timelineNs <= 0)
+            {
+                timelineNs = nowNs - (framesToAppend + 1L) * WaveformFrameDurationNs;
+            }
+            else if (missingFrameCount > framesToAppend)
+            {
+                timelineNs = Math.Max(
+                    timelineNs,
+                    nowNs - (framesToAppend + 1L) * WaveformFrameDurationNs);
+            }
+
+            lock (_waveformInputLock)
+            {
+                for (int index = 0; index < framesToAppend; index++)
+                {
+                    timelineNs += WaveformFrameDurationNs;
+                    var silencePoint = new WaveformPoint(timelineNs, 0f);
+                    _waveformInputHistory.Add(silencePoint);
+                    _waveformOutputHistory.Add(silencePoint);
+                }
+
+                long cutoffNs = timelineNs - WaveformRetentionNs;
+                _waveformInputHistory.RemoveAll(point => point.TimestampNs < cutoffNs);
+                _waveformOutputHistory.RemoveAll(point => point.TimestampNs < cutoffNs);
+            }
+
+            _waveformPlaybackTimelineNs = timelineNs;
+        }
+
+        long advancedWallNs = missingFrameCount > framesToAppend
+            ? Math.Max(0, nowNs - lastWallNs - WaveformFrameDurationNs)
+            : framesToAppend * WaveformFrameDurationNs;
+        Interlocked.CompareExchange(
+            ref _waveformLastDataWallNs,
+            lastWallNs + advancedWallNs,
+            lastWallNs);
+    }
+
     private void AppendInputSourceSamples(
         List<WaveformPoint> history,
         WaveformAccumulator accumulator,
@@ -3430,8 +3510,6 @@ public partial class MainWindow : Window
                 }
             }
         }
-
-        Interlocked.Exchange(ref _waveformLastDataWallNs, GetMonoNs());
     }
 
     private static void CommitWaveformFrame(
@@ -4202,21 +4280,17 @@ public partial class MainWindow : Window
             outputHistory = _waveformOutputHistory.ToArray();
         }
 
+        long nowNs = GetMonoNs();
         canvas.Children.Clear();
-        if (inputHistory.Length == 0 && outputHistory.Length == 0)
-        {
-            return;
-        }
 
-        long latestInputNs = inputHistory.Length > 0 ? inputHistory[^1].TimestampNs : long.MaxValue;
-        long latestOutputNs = outputHistory.Length > 0 ? outputHistory[^1].TimestampNs : long.MaxValue;
-        long availableEndNs = latestInputNs == long.MaxValue
-            ? latestOutputNs
-            : latestOutputNs == long.MaxValue
+        long latestInputNs = inputHistory.Length > 0 ? inputHistory[^1].TimestampNs : 0;
+        long latestOutputNs = outputHistory.Length > 0 ? outputHistory[^1].TimestampNs : 0;
+        long availableEndNs = latestInputNs == 0
+            ? latestOutputNs == 0 ? nowNs : latestOutputNs
+            : latestOutputNs == 0
                 ? latestInputNs
                 : Math.Min(latestInputNs, latestOutputNs);
 
-        long nowNs = GetMonoNs();
         long elapsedNs = _waveformDisplayLastTickNs > 0
             ? Math.Clamp(nowNs - _waveformDisplayLastTickNs, 0, 250_000_000L)
             : 0;
@@ -4255,11 +4329,24 @@ public partial class MainWindow : Window
         Avalonia.Points BuildPoints(WaveformPoint[] history, double baselineY)
         {
             var points = new Avalonia.Points();
+            long previousTimestampNs = startTimestampNs;
+            bool hasVisiblePoint = false;
+
             foreach (var point in history)
             {
                 if (point.TimestampNs < startTimestampNs || point.TimestampNs > endTimestampNs)
                 {
                     continue;
+                }
+
+                if (point.TimestampNs - previousTimestampNs > WaveformFrameDurationNs * 2)
+                {
+                    double gapStartX = hasVisiblePoint
+                        ? (previousTimestampNs + WaveformFrameDurationNs - startTimestampNs) * width / WaveformWindowNs
+                        : 0.0;
+                    double gapEndX = (point.TimestampNs - WaveformFrameDurationNs - startTimestampNs) * width / WaveformWindowNs;
+                    points.Add(new Avalonia.Point(Math.Clamp(gapStartX, 0.0, width), baselineY));
+                    points.Add(new Avalonia.Point(Math.Clamp(gapEndX, 0.0, width), baselineY));
                 }
 
                 double x = (point.TimestampNs - startTimestampNs) * width / WaveformWindowNs;
@@ -4269,7 +4356,23 @@ public partial class MainWindow : Window
                     0.0,
                     1.0);
                 points.Add(new Avalonia.Point(x, baselineY - normalized * amplitude));
+                previousTimestampNs = point.TimestampNs;
+                hasVisiblePoint = true;
             }
+
+            if (!hasVisiblePoint)
+            {
+                points.Add(new Avalonia.Point(0.0, baselineY));
+                points.Add(new Avalonia.Point(width, baselineY));
+            }
+            else if (endTimestampNs - previousTimestampNs > WaveformFrameDurationNs)
+            {
+                double silenceStartX = (previousTimestampNs + WaveformFrameDurationNs - startTimestampNs)
+                    * width / WaveformWindowNs;
+                points.Add(new Avalonia.Point(Math.Clamp(silenceStartX, 0.0, width), baselineY));
+                points.Add(new Avalonia.Point(width, baselineY));
+            }
+
             return points;
         }
 
