@@ -132,52 +132,68 @@
                    FontSize="10"
                    Padding="10" />
 
-          <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto" ColumnSpacing="10">
-            <Button x:Name="DownloadServerButton"
-                    Classes="secondary-action"
-                    Height="38"
-                    Click="DownloadServer_OnClick">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <mi:MaterialIcon Kind="Github" Width="16" Height="16" />
-                <TextBlock Text="从 GitHub 下载" VerticalAlignment="Center" />
-              </StackPanel>
-            </Button>
-            <Button x:Name="InstallDependenciesButton"
-                    Grid.Column="1"
-                    Classes="secondary-action"
-                    Height="38"
-                    IsEnabled="False"
-                    Click="InstallDependencies_OnClick">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <mi:MaterialIcon Kind="PackageDown" Width="16" Height="16" />
-                <TextBlock Text="下载依赖" VerticalAlignment="Center" />
-              </StackPanel>
-            </Button>
-            <Button x:Name="CheckDependenciesButton"
-                    Grid.Column="2"
-                    Classes="secondary-action"
-                    Height="38"
-                    IsEnabled="False"
-                    Click="CheckDependencies_OnClick">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <mi:MaterialIcon Kind="CheckDecagramOutline" Width="16" Height="16" />
-                <TextBlock Text="检查依赖" VerticalAlignment="Center" />
-              </StackPanel>
-            </Button>
-            <Button Grid.Column="4"
-                    Classes="secondary-action"
-                    Width="88"
-                    Height="38"
-                    Content="取消"
-                    Click="Cancel_OnClick" />
-            <Button x:Name="SaveButton"
-                    Grid.Column="5"
-                    Classes="primary-action"
-                    Width="96"
-                    Height="38"
-                    IsEnabled="False"
-                    Content="保存设置"
-                    Click="Save_OnClick" />
+          <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Button x:Name="DownloadServerButton"
+                      Classes="secondary-action"
+                      Height="38"
+                      Click="DownloadServer_OnClick">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <mi:MaterialIcon Kind="Github" Width="16" Height="16" />
+                  <TextBlock Text="从 GitHub 下载" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button x:Name="InstallDependenciesButton"
+                      Classes="secondary-action"
+                      Height="38"
+                      IsEnabled="False"
+                      Click="InstallDependencies_OnClick">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <mi:MaterialIcon Kind="PackageDown" Width="16" Height="16" />
+                  <TextBlock Text="下载依赖" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button x:Name="CheckDependenciesButton"
+                      Classes="secondary-action"
+                      Height="38"
+                      IsEnabled="False"
+                      Click="CheckDependencies_OnClick">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <mi:MaterialIcon Kind="CheckDecagramOutline" Width="16" Height="16" />
+                  <TextBlock Text="检查依赖" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button x:Name="UpdateSourceButton"
+                      Classes="secondary-action"
+                      Height="38"
+                      IsEnabled="False"
+                      Click="UpdateSource_OnClick">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <mi:MaterialIcon Kind="Refresh" Width="16" Height="16" />
+                  <TextBlock x:Name="UpdateSourceButtonText"
+                             Text="检查更新"
+                             VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+            </StackPanel>
+
+            <StackPanel Grid.Row="1"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Spacing="10">
+              <Button Classes="secondary-action"
+                      Width="88"
+                      Height="38"
+                      Content="取消"
+                      Click="Cancel_OnClick" />
+              <Button x:Name="SaveButton"
+                      Classes="primary-action"
+                      Width="96"
+                      Height="38"
+                      IsEnabled="False"
+                      Content="保存设置"
+                      Click="Save_OnClick" />
+            </StackPanel>
           </Grid>
         </StackPanel>
       </Grid>

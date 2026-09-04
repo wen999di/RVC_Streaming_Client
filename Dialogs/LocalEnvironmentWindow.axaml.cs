@@ -1,7 +1,10 @@
+using System.Collections.Concurrent;
+using System.Text;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using ClientAvalonia.Services;
 using Material.Icons;
 
@@ -11,20 +14,35 @@ public sealed record LocalEnvironmentConfiguration(string ServerDirectory, bool 
 
 public partial class LocalEnvironmentWindow : Window
 {
+    private sealed class DirectProgress(Action<string> handler) : IProgress<string>
+    {
+        public void Report(string value) => handler(value);
+    }
+
     private const int MaxOutputLength = 60_000;
+    private readonly ConcurrentQueue<string> _pendingOutput = new();
+    private readonly DispatcherTimer _outputFlushTimer;
     private CancellationTokenSource? _operationCts;
     private bool _verified;
     private bool _busy;
+    private bool _updateAvailable;
+    private bool _sourceChanged;
     private string _verifiedDirectory = string.Empty;
 
+    public bool UpdateAvailable => _updateAvailable;
+    public bool RequiresEnvironmentRecheck => _sourceChanged;
+
     public LocalEnvironmentWindow()
-        : this(AppPaths.DefaultLocalServerDirectory, false)
+        : this(AppPaths.DefaultLocalServerDirectory, false, false)
     {
     }
 
-    public LocalEnvironmentWindow(string serverDirectory, bool isVerified)
+    public LocalEnvironmentWindow(string serverDirectory, bool isVerified, bool updateAvailable = false)
     {
         InitializeComponent();
+        _outputFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(75) };
+        _outputFlushTimer.Tick += (_, _) => FlushPendingOutput();
+        _updateAvailable = updateAvailable;
         ServerDirectoryTextBox.Text = string.IsNullOrWhiteSpace(serverDirectory)
             ? AppPaths.DefaultLocalServerDirectory
             : Path.GetFullPath(serverDirectory);
@@ -44,6 +62,7 @@ public partial class LocalEnvironmentWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _outputFlushTimer.Stop();
         _operationCts?.Cancel();
         _operationCts?.Dispose();
         _operationCts = null;
@@ -62,6 +81,7 @@ public partial class LocalEnvironmentWindow : Window
 
         ServerDirectoryTextBox.Text = Path.GetFullPath(folderPath);
         InvalidateVerification();
+        _updateAvailable = false;
         DependencyOutputTextBox.Text = string.Empty;
         DependencyOutputTextBox.IsVisible = false;
         SetUnverifiedStatus();
@@ -80,10 +100,11 @@ public partial class LocalEnvironmentWindow : Window
                 token
             );
             AppendResultDetails(result);
+            if (result.Success) _updateAvailable = false;
             SetStatus(
                 result.Success ? null : false,
                 result.Summary,
-                result.Success ? "请继续下载依赖。" : result.Details
+                result.Success ? "请继续下载依赖。" : string.Empty
             );
         }
         catch (OperationCanceledException)
@@ -109,7 +130,7 @@ public partial class LocalEnvironmentWindow : Window
             AppendResultDetails(installResult);
             if (!installResult.Success)
             {
-                SetStatus(false, installResult.Summary, installResult.Details);
+                SetStatus(false, installResult.Summary, string.Empty);
                 return;
             }
 
@@ -148,11 +169,73 @@ public partial class LocalEnvironmentWindow : Window
         }
     }
 
-    private (CancellationToken Token, IProgress<string> Output) BeginOperation(string title)
+    private async void UpdateSource_OnClick(object? sender, RoutedEventArgs e)
     {
-        InvalidateVerification();
+        var serverDirectory = ServerDirectoryTextBox.Text?.Trim() ?? string.Empty;
+        if (!_updateAvailable)
+        {
+            var (token, output) = BeginOperation("正在检查 Server 源码更新", invalidateVerification: false);
+            try
+            {
+                var result = await LocalServerEnvironmentChecker.CheckForUpdatesAsync(
+                    serverDirectory,
+                    output,
+                    token
+                );
+                _updateAvailable = result.Success && result.UpdateAvailable;
+                SetStatus(
+                    result.Success ? (_updateAvailable ? null : true) : false,
+                    result.Summary,
+                    _updateAvailable ? "点击“更新源码”安装 main 最新版本。" : string.Empty
+                );
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                EndOperation();
+            }
+            return;
+        }
+
+        var (updateToken, updateOutput) = BeginOperation("正在更新 Server 源码");
+        try
+        {
+            var result = await LocalServerEnvironmentChecker.UpdateServerAsync(
+                serverDirectory,
+                updateOutput,
+                updateToken
+            );
+            AppendResultDetails(result);
+            if (result.Success)
+            {
+                _updateAvailable = false;
+                _sourceChanged = true;
+            }
+            SetStatus(
+                result.Success ? null : false,
+                result.Summary,
+                result.Success ? "请重新下载依赖并完成检查。" : string.Empty
+            );
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
+    private (CancellationToken Token, IProgress<string> Output) BeginOperation(
+        string title,
+        bool invalidateVerification = true)
+    {
+        if (invalidateVerification) InvalidateVerification();
         _busy = true;
         SetStatus(null, title, string.Empty);
+        ClearPendingOutput();
         DependencyOutputTextBox.Text = string.Empty;
         DependencyOutputTextBox.IsVisible = true;
         _operationCts?.Cancel();
@@ -160,11 +243,14 @@ public partial class LocalEnvironmentWindow : Window
         _operationCts = new CancellationTokenSource();
         RefreshActionButtons();
         EnvironmentCheckProgress.IsVisible = true;
-        return (_operationCts.Token, new Progress<string>(AppendOutput));
+        _outputFlushTimer.Start();
+        return (_operationCts.Token, new DirectProgress(QueueOutput));
     }
 
     private void EndOperation()
     {
+        FlushPendingOutput();
+        _outputFlushTimer.Stop();
         _busy = false;
         EnvironmentCheckProgress.IsVisible = false;
         _operationCts?.Dispose();
@@ -185,7 +271,7 @@ public partial class LocalEnvironmentWindow : Window
         SetStatus(
             result.Success,
             result.Summary,
-            result.Success ? "Pixi 环境和运行依赖均可用。" : result.Details
+            result.Success ? "Pixi 环境和运行依赖均可用。" : string.Empty
         );
         if (!result.Success) return;
         _verified = true;
@@ -217,11 +303,14 @@ public partial class LocalEnvironmentWindow : Window
         DownloadServerButton.IsEnabled = !_busy && LocalServerEnvironmentChecker.CanDownloadServer(serverDirectory);
         InstallDependenciesButton.IsEnabled = !_busy && hasLayout;
         CheckDependenciesButton.IsEnabled = !_busy && hasLayout;
+        UpdateSourceButton.IsEnabled = !_busy && hasLayout;
+        UpdateSourceButtonText.Text = _updateAvailable ? "更新源码" : "检查更新";
         SaveButton.IsEnabled = !_busy && _verified;
     }
 
     private void AppendResultDetails(LocalServerEnvironmentCheckResult result)
     {
+        FlushPendingOutput();
         if (result.Success || string.IsNullOrWhiteSpace(result.Details)) return;
         var current = DependencyOutputTextBox.Text ?? string.Empty;
         if (!current.Contains(result.Details, StringComparison.Ordinal)) AppendOutput(result.Details);
@@ -240,6 +329,30 @@ public partial class LocalEnvironmentWindow : Window
         }
         DependencyOutputTextBox.Text = updated;
         DependencyOutputTextBox.CaretIndex = updated.Length;
+    }
+
+    private void QueueOutput(string line)
+    {
+        if (!string.IsNullOrWhiteSpace(line)) _pendingOutput.Enqueue(line);
+    }
+
+    private void FlushPendingOutput()
+    {
+        if (_pendingOutput.IsEmpty) return;
+        var lines = new StringBuilder();
+        while (_pendingOutput.TryDequeue(out var line))
+        {
+            if (lines.Length > 0) lines.AppendLine();
+            lines.Append(line);
+        }
+        AppendOutput(lines.ToString());
+    }
+
+    private void ClearPendingOutput()
+    {
+        while (_pendingOutput.TryDequeue(out _))
+        {
+        }
     }
 
     private void SetStatus(bool? success, string title, string details)

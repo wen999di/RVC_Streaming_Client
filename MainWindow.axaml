@@ -1765,20 +1765,31 @@
                                        TextTrimming="CharacterEllipsis"
                                        VerticalAlignment="Center" />
                           </StackPanel>
-                          <Button x:Name="LocalEnvironmentSettingsButton"
-                                  Grid.Column="1"
-                                  Classes="secondary-action"
-                                  MinWidth="76"
-                                  Height="36"
-                                  Padding="10,7"
-                                  IsVisible="False"
-                                  Click="LocalEnvironmentSettings_OnClick"
-                                  ToolTip.Tip="配置本地 Server 环境">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                              <mi:MaterialIcon Kind="CogOutline" Width="16" Height="16" />
-                              <TextBlock Text="设置" VerticalAlignment="Center" />
-                            </StackPanel>
-                          </Button>
+                          <Grid Grid.Column="1" VerticalAlignment="Center">
+                            <Button x:Name="LocalEnvironmentSettingsButton"
+                                    Classes="secondary-action"
+                                    MinWidth="76"
+                                    Height="36"
+                                    Padding="10,7"
+                                    IsVisible="False"
+                                    Click="LocalEnvironmentSettings_OnClick"
+                                    ToolTip.Tip="配置本地 Server 环境">
+                              <StackPanel Orientation="Horizontal" Spacing="6">
+                                <mi:MaterialIcon Kind="CogOutline" Width="16" Height="16" />
+                                <TextBlock Text="设置" VerticalAlignment="Center" />
+                              </StackPanel>
+                            </Button>
+                            <Ellipse x:Name="LocalServerUpdateDot"
+                                     Width="8"
+                                     Height="8"
+                                     Margin="0,-3,-3,0"
+                                     HorizontalAlignment="Right"
+                                     VerticalAlignment="Top"
+                                     Fill="{StaticResource AccentBrush}"
+                                     IsHitTestVisible="False"
+                                     IsVisible="False"
+                                     ZIndex="1" />
+                          </Grid>
                           <Button x:Name="ConnectionToggleButton"
                                   Grid.Column="2"
                                   Classes="primary-action"

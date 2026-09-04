@@ -237,6 +237,8 @@ public partial class MainWindow : Window
     private bool _useLocalServer;
     private string _localServerDirectory = AppPaths.DefaultLocalServerDirectory;
     private bool _localServerEnvironmentVerified;
+    private bool _localServerUpdateAvailable;
+    private readonly CancellationTokenSource _windowLifetimeCts = new();
     private bool _connectionActionBusy;
     private string _fileSortMode = "time_desc";
     private bool _hideBoundFiles;
@@ -371,7 +373,11 @@ public partial class MainWindow : Window
         InitializeMainTabPageAnimation();
         KeyDown += MainWindow_KeyDown;
         MainTabControl.SelectionChanged += OnMainTabControlSelectionChanged;
-        Opened += (_, _) => Dispatcher.UIThread.Post(() => UpdateMainTabHeaderVisual(false), DispatcherPriority.Loaded);
+        Opened += (_, _) =>
+        {
+            Dispatcher.UIThread.Post(() => UpdateMainTabHeaderVisual(false), DispatcherPriority.Loaded);
+            _ = CheckLocalServerUpdateOnStartupAsync();
+        };
         MainTabsHeaderGrid.SizeChanged += (_, _) => UpdateMainTabHeaderVisual(false);
         AddHandler(InputElement.PointerPressedEvent, GlobalPointerPressed_CommitSliderEdit, RoutingStrategies.Tunnel);
         AddHandler(InputElement.PointerPressedEvent, GlobalPointerPressed_ClearModelCardSelection, RoutingStrategies.Tunnel);
@@ -1076,8 +1082,16 @@ public partial class MainWindow : Window
     private async void LocalEnvironmentSettings_OnClick(object? sender, RoutedEventArgs e)
     {
         if (_client.IsConnected || _connectionActionBusy) return;
-        var dialog = new LocalEnvironmentWindow(_localServerDirectory, _localServerEnvironmentVerified);
+        var dialog = new LocalEnvironmentWindow(
+            _localServerDirectory,
+            _localServerEnvironmentVerified,
+            _localServerUpdateAvailable
+        );
         var configuration = await dialog.ShowDialog<LocalEnvironmentConfiguration?>(this);
+        _localServerUpdateAvailable = dialog.UpdateAvailable;
+        if (dialog.RequiresEnvironmentRecheck) _localServerEnvironmentVerified = false;
+        UpdateLocalEnvironmentUi();
+        UpdateConnectionActionAvailability();
         if (configuration is null) return;
 
         _localServerDirectory = Path.GetFullPath(configuration.ServerDirectory);
@@ -1086,6 +1100,39 @@ public partial class MainWindow : Window
         UpdateConnectionActionAvailability();
         ScheduleClientSettingsSave();
         Log($"本地环境设置已保存：{_localServerDirectory}");
+    }
+
+    private async Task CheckLocalServerUpdateOnStartupAsync()
+    {
+        var serverDirectory = _localServerDirectory;
+        if (!LocalServerEnvironmentChecker.HasServerLayout(serverDirectory)) return;
+
+        try
+        {
+            var result = await LocalServerEnvironmentChecker.CheckForUpdatesAsync(
+                serverDirectory,
+                cancellationToken: _windowLifetimeCts.Token
+            );
+            if (!result.Success || _windowLifetimeCts.IsCancellationRequested) return;
+            if (!string.Equals(
+                    NormalizeLocalServerDirectory(serverDirectory),
+                    NormalizeLocalServerDirectory(_localServerDirectory),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _localServerUpdateAvailable = result.UpdateAvailable;
+            UpdateLocalEnvironmentUi();
+            if (result.UpdateAvailable) Log("发现本地 Server 源码更新。");
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log($"自动检查 Server 更新失败：{ex.Message}");
+        }
     }
 
     private static string NormalizeLocalServerDirectory(string? directory)
@@ -1110,7 +1157,12 @@ public partial class MainWindow : Window
         LocalEnvironmentStatusTextBlock.Text = _localServerEnvironmentVerified
             ? "本地环境已就绪"
             : "本地环境未设置";
+        LocalServerUpdateDot.IsVisible = _useLocalServer && _localServerUpdateAvailable;
         ToolTip.SetTip(LocalEnvironmentStatusPanel, _localServerDirectory);
+        ToolTip.SetTip(
+            LocalEnvironmentSettingsButton,
+            _localServerUpdateAvailable ? "发现 Server 源码更新" : "配置本地 Server 环境"
+        );
     }
 
     private void UpdateConnectionActionAvailability()
@@ -2708,6 +2760,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _windowLifetimeCts.Cancel();
         _trainingPollTimer?.Stop();
         _settingsSaveTimer?.Stop();
         SaveClientSettingsNow();
@@ -2717,6 +2770,7 @@ public partial class MainWindow : Window
         _client.BinaryMessageReceived -= Client_OnBinaryMessageReceived;
         StopStreaming();
         _ = _client.DisposeAsync();
+        _windowLifetimeCts.Dispose();
         base.OnClosed(e);
     }
 
