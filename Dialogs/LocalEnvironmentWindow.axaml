@@ -61,6 +61,7 @@
             <TextBlock Text="本地环境设置"
                        FontSize="13"
                        FontWeight="SemiBold"
+                       VerticalAlignment="Center"
                        Foreground="{StaticResource TextStrongBrush}" />
           </StackPanel>
           <Border Height="1" Background="{StaticResource BorderSoftBrush}" VerticalAlignment="Bottom" />

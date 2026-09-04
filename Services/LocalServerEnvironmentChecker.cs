@@ -13,7 +13,8 @@ public sealed record LocalServerEnvironmentCheckResult(
 public static class LocalServerEnvironmentChecker
 {
     public const string ServerRepositoryUrl = "https://github.com/wen999di/RVC_Streaming_Server";
-    private const string ServerArchiveUrl = ServerRepositoryUrl + "/archive/refs/heads/master.zip";
+    private const string ServerRepositoryBranch = "main";
+    private const string ServerArchiveUrl = ServerRepositoryUrl + "/archive/refs/heads/" + ServerRepositoryBranch + ".zip";
     private const int MaxDetailsLength = 50_000;
     private const string CheckScript =
         "import importlib; " +
@@ -101,7 +102,7 @@ public static class LocalServerEnvironmentChecker
             Directory.CreateDirectory(downloadRoot);
             Directory.CreateDirectory(extractionDirectory);
             Directory.CreateDirectory(parentDirectory);
-            output?.Report($"> 从 {ServerRepositoryUrl} 下载 master 源码快照");
+            output?.Report($"> 从 {ServerRepositoryUrl} 下载 {ServerRepositoryBranch} 源码快照");
             output?.Report("> 下载内容不包含 .git 目录或 Git 历史");
 
             using var request = new HttpRequestMessage(HttpMethod.Get, ServerArchiveUrl);
