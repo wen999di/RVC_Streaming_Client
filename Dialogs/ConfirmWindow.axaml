@@ -1,18 +1,122 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ClientAvalonia"
+        xmlns:mi="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
         x:Class="ClientAvalonia.Dialogs.ConfirmWindow"
-        Width="440"
+        Width="480"
         SizeToContent="Height"
         CanResize="False"
+        CanMaximize="False"
+        CanMinimize="False"
         WindowStartupLocation="CenterOwner"
-        Title="确认">
-  <Border Background="{StaticResource CanvasSoftBrush}" Padding="20">
-    <StackPanel Spacing="16">
-      <TextBlock x:Name="MessageTextBlock" Text="确认执行该操作吗？" TextWrapping="Wrap" FontSize="16" FontWeight="SemiBold" />
-      <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
-        <Button Classes="secondary-action" Content="取消" Click="Cancel_OnClick" />
-        <Button Grid.Column="1" Classes="primary-action" Content="确定" Click="Confirm_OnClick" />
+        Title="确认"
+        Background="Transparent"
+        WindowDecorations="Full"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="44"
+        TransparencyLevelHint="Mica"
+        KeyDown="Window_OnKeyDown">
+  <Window.Styles>
+    <Style Selector="WindowDrawnDecorations /template/ Panel#PART_OverlayWrapper">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+    <Style Selector="WindowDrawnDecorations /template/ Panel#PART_UnderlayWrapper">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+  </Window.Styles>
+
+  <Grid>
+    <Border Background="{StaticResource CanvasBrush}"
+            BorderBrush="{StaticResource BorderSoftBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+      <Grid RowDefinitions="44,Auto">
+        <!-- 与主窗口一致的自绘标题栏 -->
+        <Grid Grid.Row="0" ZIndex="10">
+          <Border Background="Transparent" PointerPressed="TitleBar_PointerPressed" />
+          <StackPanel Orientation="Horizontal"
+                      Spacing="8"
+                      VerticalAlignment="Center"
+                      Margin="16,0,52,0"
+                      IsHitTestVisible="False">
+            <Border Width="26"
+                    Height="26"
+                    CornerRadius="13"
+                    Background="{StaticResource AccentSoftBrush}">
+              <mi:MaterialIcon Kind="Waveform"
+                               Width="15"
+                               Height="15"
+                               Foreground="{StaticResource AccentBrush}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+            </Border>
+            <TextBlock x:Name="DialogTitleTextBlock"
+                       Text="确认"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="{StaticResource TextStrongBrush}"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+          <Border Height="1"
+                  Background="{StaticResource BorderSoftBrush}"
+                  VerticalAlignment="Bottom" />
+        </Grid>
+
+        <Grid Grid.Row="1"
+              Margin="22,20,22,22"
+              RowDefinitions="Auto,Auto"
+              RowSpacing="18">
+          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14" Margin="4,0">
+              <Border Width="40"
+                      Height="40"
+                      CornerRadius="20"
+                      Background="{StaticResource DangerSoftBrush}"
+                      VerticalAlignment="Top">
+                <mi:MaterialIcon Kind="AlertOutline"
+                                 Width="21"
+                                 Height="21"
+                                 Foreground="{StaticResource DangerBrush}"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center" />
+              </Border>
+              <StackPanel Grid.Column="1" Spacing="6" VerticalAlignment="Center">
+                <TextBlock Text="请确认是否继续"
+                           FontSize="15"
+                           FontWeight="SemiBold"
+                           Foreground="{StaticResource TextStrongBrush}" />
+                <TextBlock x:Name="MessageTextBlock"
+                           Text="确认执行该操作吗？"
+                           TextWrapping="Wrap"
+                           FontSize="13"
+                           LineHeight="21"
+                           Foreground="{StaticResource TextMutedBrush}" />
+              </StackPanel>
+          </Grid>
+
+          <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+            <Button Grid.Column="1"
+                    Classes="secondary-action"
+                    Width="88"
+                    Height="38"
+                    Content="取消"
+                    Click="Cancel_OnClick" />
+            <Button Grid.Column="2"
+                    Classes="primary-action danger-action"
+                    Width="88"
+                    Height="38"
+                    Content="确定"
+                    Click="Confirm_OnClick" />
+          </Grid>
+        </Grid>
       </Grid>
-    </StackPanel>
-  </Border>
+    </Border>
+
+    <Button Classes="titlebar-btn titlebar-close"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            ZIndex="20"
+            Click="CloseButton_OnClick"
+            Content="{mi:MaterialIconExt Kind=Close, IconSize=20}" />
+  </Grid>
 </Window>

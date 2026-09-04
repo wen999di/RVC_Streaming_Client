@@ -1,0 +1,247 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ClientAvalonia"
+        xmlns:model="using:ClientAvalonia.Models"
+        xmlns:mi="clr-namespace:Material.Icons.Avalonia;assembly=Material.Icons.Avalonia"
+        x:Class="ClientAvalonia.Dialogs.HubDownloadWindow"
+        Width="760"
+        Height="680"
+        MinWidth="660"
+        MinHeight="560"
+        WindowStartupLocation="CenterOwner"
+        Title="从模型仓库下载"
+        Background="Transparent"
+        WindowDecorations="Full"
+        ExtendClientAreaToDecorationsHint="True"
+        ExtendClientAreaTitleBarHeightHint="44"
+        CanMaximize="True"
+        CanMinimize="True"
+        TransparencyLevelHint="Mica"
+        KeyDown="Window_OnKeyDown">
+  <Window.Styles>
+    <Style Selector="WindowDrawnDecorations /template/ Panel#PART_OverlayWrapper">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+    <Style Selector="WindowDrawnDecorations /template/ Panel#PART_UnderlayWrapper">
+      <Setter Property="IsVisible" Value="False" />
+    </Style>
+  </Window.Styles>
+
+  <Grid>
+    <Border x:Name="OuterBorder"
+            Background="{StaticResource CanvasBrush}"
+            BorderBrush="{StaticResource BorderSoftBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+      <Grid RowDefinitions="44,*">
+        <!-- Match the main window's custom title bar. -->
+        <Grid Grid.Row="0" Height="44" VerticalAlignment="Top" ZIndex="10">
+          <Border Background="Transparent" PointerPressed="TitleBar_PointerPressed" />
+          <StackPanel Orientation="Horizontal"
+                      Spacing="8"
+                      VerticalAlignment="Center"
+                      Margin="16,0,52,0"
+                      IsHitTestVisible="False">
+            <Border Width="26" Height="26" CornerRadius="13" Background="{StaticResource AccentSoftBrush}">
+              <mi:MaterialIcon Kind="Waveform"
+                               Width="15" Height="15"
+                               Foreground="{StaticResource AccentBrush}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+            </Border>
+            <TextBlock Text="从模型仓库下载"
+                       VerticalAlignment="Center"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="{StaticResource TextStrongBrush}"
+                       TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal"
+                      HorizontalAlignment="Right"
+                      Margin="0,0,46,0"
+                      Spacing="0">
+            <Button Classes="titlebar-btn"
+                    Click="MinimizeBtn_Click"
+                    Content="{mi:MaterialIconExt Kind=Minus, IconSize=16}" />
+            <Button x:Name="MaximizeRestoreBtn"
+                    Classes="titlebar-btn"
+                    Click="MaximizeBtn_Click">
+              <Panel>
+                <mi:MaterialIcon x:Name="MaximizeIcon"
+                                 Kind="CropSquare"
+                                 Width="14" Height="14"
+                                 IsHitTestVisible="False" />
+                <mi:MaterialIcon x:Name="RestoreIcon"
+                                 Kind="CheckboxMultipleBlankOutline"
+                                 Width="14" Height="14"
+                                 IsHitTestVisible="False"
+                                 IsVisible="False" />
+              </Panel>
+            </Button>
+          </StackPanel>
+          <Border Height="1"
+                  Background="{StaticResource BorderSoftBrush}"
+                  VerticalAlignment="Bottom" />
+        </Grid>
+
+        <Grid Grid.Row="1"
+              Margin="22,18,22,22"
+              RowDefinitions="Auto,Auto,*,Auto,Auto"
+              RowSpacing="14">
+          <StackPanel Spacing="4">
+            <TextBlock Text="从模型仓库下载" FontSize="18" FontWeight="SemiBold" />
+            <TextBlock Text="输入仓库地址或 owner/repo，打开仓库后选择需要下载的文件。"
+                       Classes="muted" FontSize="12" />
+          </StackPanel>
+
+          <Grid Grid.Row="1" ColumnDefinitions="150,*,150,Auto" ColumnSpacing="10">
+            <StackPanel Spacing="4">
+              <TextBlock Text="来源" Classes="muted" />
+              <local:AnimatedComboBox x:Name="ProviderComboBox" SelectedIndex="0">
+                <ComboBoxItem Content="ModelScope" Tag="modelscope" />
+                <ComboBoxItem Content="Hugging Face" Tag="huggingface" />
+              </local:AnimatedComboBox>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="4">
+              <TextBlock Text="仓库" Classes="muted" />
+              <AutoCompleteBox x:Name="RepositoryTextBox"
+                               MinimumPrefixLength="0"
+                               FilterMode="Contains"
+                               IsTextCompletionEnabled="True"
+                               MaxDropDownHeight="220" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="4">
+              <TextBlock Text="版本" Classes="muted" />
+              <AutoCompleteBox x:Name="RevisionTextBox"
+                               MinimumPrefixLength="0"
+                               FilterMode="Contains"
+                               IsTextCompletionEnabled="True"
+                               MaxDropDownHeight="180" />
+            </StackPanel>
+            <Button x:Name="OpenRepositoryButton" Grid.Column="3"
+                    Classes="primary-action" Content="打开仓库"
+                    VerticalAlignment="Bottom" Click="OpenRepository_OnClick" />
+          </Grid>
+
+          <Border Grid.Row="2" Classes="section-card" Padding="10">
+            <Grid RowDefinitions="Auto,*" RowSpacing="8">
+              <StackPanel Spacing="4">
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                  <TextBlock x:Name="RepositorySummaryText" Text="尚未打开仓库"
+                             FontWeight="SemiBold" VerticalAlignment="Center" />
+                  <Button Grid.Column="1" Classes="secondary-action" Content="全选" Click="SelectAll_OnClick" />
+                  <Button Grid.Column="2" Classes="secondary-action" Content="清除" Click="ClearSelection_OnClick" />
+                </Grid>
+                <TextBlock Text="点击卡片选择文件或文件夹，点击左侧箭头展开/折叠。"
+                           Classes="muted" FontSize="11" Margin="2,0,0,0" />
+              </StackPanel>
+              <ListBox x:Name="RepositoryTreeView"
+                       Grid.Row="1"
+                       Classes="hub-files-list"
+                       Padding="0,0,10,0">
+                <ListBox.ItemTemplate>
+                  <DataTemplate DataType="model:HubRepositoryNode">
+                    <Border Classes="item-card hub-file-card"
+                            Classes.selected="{Binding IsSelected}"
+                            Margin="{Binding TreeIndent, Converter={StaticResource TreeIndentToMarginConverter}}"
+                            Padding="10,8"
+                            Opacity="{Binding TreeOpacity}"
+                            PointerPressed="RepositoryNode_PointerPressed">
+                      <Border.RenderTransform>
+                        <TranslateTransform Y="{Binding TreeOffsetY}">
+                          <TranslateTransform.Transitions>
+                            <Transitions>
+                              <DoubleTransition Property="Y" Duration="0:0:0.15" />
+                            </Transitions>
+                          </TranslateTransform.Transitions>
+                        </TranslateTransform>
+                      </Border.RenderTransform>
+                      <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8">
+                        <Border Width="22"
+                                Height="24"
+                                IsVisible="{Binding CanExpand}"
+                                Cursor="Hand"
+                                PointerPressed="RepositoryExpander_PointerPressed">
+                          <mi:MaterialIcon Kind="ChevronRight"
+                                           Width="17" Height="17"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           RenderTransformOrigin="50%,50%"
+                                           VerticalAlignment="Center"
+                                           HorizontalAlignment="Center">
+                            <mi:MaterialIcon.RenderTransform>
+                              <RotateTransform Angle="{Binding ExpandRotation}">
+                                <RotateTransform.Transitions>
+                                  <Transitions>
+                                    <DoubleTransition Property="Angle" Duration="0:0:0.18" />
+                                  </Transitions>
+                                </RotateTransform.Transitions>
+                              </RotateTransform>
+                            </mi:MaterialIcon.RenderTransform>
+                          </mi:MaterialIcon>
+                        </Border>
+                        <mi:MaterialIcon Grid.Column="1"
+                                         Kind="FolderOutline"
+                                         Width="18" Height="18"
+                                         Foreground="{StaticResource AccentTextBrush}"
+                                         IsVisible="{Binding IsFolder}"
+                                         VerticalAlignment="Center" />
+                        <mi:MaterialIcon Grid.Column="1"
+                                         Kind="FileOutline"
+                                         Width="18" Height="18"
+                                         Foreground="{StaticResource TextMutedBrush}"
+                                         IsVisible="{Binding !IsFolder}"
+                                         VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2"
+                                   Text="{Binding Name}"
+                                   FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="3"
+                                   Text="{Binding DetailText}"
+                                   Classes="muted"
+                                   FontSize="11"
+                                   VerticalAlignment="Center" />
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </Border>
+
+          <Grid Grid.Row="3" RowDefinitions="Auto,Auto" RowSpacing="8">
+            <StackPanel Spacing="4">
+              <TextBlock Text="服务器保存位置" Classes="muted" />
+              <local:AnimatedComboBox x:Name="DestinationComboBox"
+                                      PlaceholderText="选择服务器保存位置"
+                                      AutomationProperties.Name="服务器保存位置" />
+            </StackPanel>
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <ProgressBar x:Name="DownloadProgressBar" Minimum="0" Maximum="100" Value="0" Height="8"
+                           VerticalAlignment="Center" />
+              <TextBlock x:Name="DownloadStatusText" Grid.Column="1" Text="等待选择"
+                         Classes="muted" VerticalAlignment="Center" />
+            </Grid>
+          </Grid>
+
+          <Grid Grid.Row="4" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10">
+            <TextBlock x:Name="ErrorText" Foreground="{StaticResource DangerBrush}"
+                       TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button x:Name="CancelButton" Grid.Column="1" Classes="secondary-action"
+                    Content="取消" Click="Cancel_OnClick" />
+            <Button x:Name="DownloadButton" Grid.Column="2" Classes="primary-action"
+                    Content="下载所选文件" Click="Download_OnClick" />
+          </Grid>
+        </Grid>
+      </Grid>
+    </Border>
+
+    <!-- Keep the close hover area flush with the window edge, like the main window. -->
+    <Button Classes="titlebar-btn titlebar-close"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Top"
+            ZIndex="20"
+            Click="CloseButton_OnClick"
+            Content="{mi:MaterialIconExt Kind=Close, IconSize=20}" />
+  </Grid>
+</Window>

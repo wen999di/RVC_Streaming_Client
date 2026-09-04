@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Diagnostics;
@@ -8,7 +8,9 @@ using System.Text;
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Animation;
+using Avalonia.Animation.Easings;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -42,6 +44,12 @@ public partial class MainWindow : Window
         public double TotalMs { get; init; }
         public double ServerQueueMs { get; init; }
         public double InferMs { get; init; }
+    }
+
+    private sealed class HubDownloadClientOperation
+    {
+        public required TaskCompletionSource<HubDownloadResult> Completion { get; init; }
+        public required IProgress<HubDownloadProgress> Progress { get; init; }
     }
 
     private readonly record struct WaveformPoint(long TimestampNs, float Rms);
@@ -91,15 +99,18 @@ public partial class MainWindow : Window
     {
         private readonly BufferedWaveProvider _source;
         private readonly object _sync;
+        private readonly Func<int, int, bool> _shouldHold;
         private readonly Action<byte[], int, int, int> _onRead;
 
         public PlaybackTapWaveProvider(
             BufferedWaveProvider source,
             object sync,
+            Func<int, int, bool> shouldHold,
             Action<byte[], int, int, int> onRead)
         {
             _source = source;
             _sync = sync;
+            _shouldHold = shouldHold;
             _onRead = onRead;
         }
 
@@ -109,15 +120,24 @@ public partial class MainWindow : Window
         {
             lock (_sync)
             {
+                int alignedCount = count - count % WaveFormat.BlockAlign;
                 int bufferedBytesBeforeRead = _source.BufferedBytes;
-                int read = _source.Read(buffer, offset, count);
+                if (_shouldHold(bufferedBytesBeforeRead, alignedCount))
+                {
+                    Array.Clear(buffer, offset, count);
+                    _onRead(buffer, offset, count, 0);
+                    return count;
+                }
+
+                int read = alignedCount > 0 ? _source.Read(buffer, offset, alignedCount) : 0;
                 int mediaBytesRead = Math.Min(read, bufferedBytesBeforeRead);
                 mediaBytesRead -= mediaBytesRead % WaveFormat.BlockAlign;
-                if (read > 0)
+                if (read < count)
                 {
-                    _onRead(buffer, offset, read, mediaBytesRead);
+                    Array.Clear(buffer, offset + read, count - read);
                 }
-                return read;
+                _onRead(buffer, offset, count, mediaBytesRead);
+                return count;
             }
         }
     }
@@ -126,6 +146,32 @@ public partial class MainWindow : Window
     private const int Channels = 1;
     private const long NsPerSample = 1_000_000_000L / SampleRate;
     private const double LatencySampleWindowSeconds = 10.0;
+    private const int AudioDeviceBufferMs = 30;
+    private const int AdaptiveSchedulerSlackMs = 5;
+    private const long AdaptiveStatusUpdateIntervalNs = 250_000_000L;
+    private const long LatencyUiUpdateIntervalNs = 250_000_000L;
+    private static readonly HashSet<string> TrainingAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus",
+    };
+
+    private static class InferenceDefaults
+    {
+        public const int SpeakerId = 0;
+        public const int F0UpKey = 0;
+        public const float BlockTimeSeconds = 0.25f;
+        public const float CrossfadeSeconds = 0.04f;
+        public const float ExtraTimeSeconds = 2.0f;
+        public const float FormantShift = 0.0f;
+        public const string F0Method = "rmvpe";
+        public const float IndexRate = 0.5f;
+        public const float SilenceDbThreshold = -70.0f;
+        public const float SilenceGateAttenuation = 0.0f;
+        public const bool InputNoiseReduce = false;
+        public const bool OutputNoiseReduce = false;
+        public const float NoiseReduceStrength = 0.9f;
+        public const float RmsMixRate = 0.8f;
+    }
 
     private readonly RvcClientService _client = new();
     private readonly ObservableCollection<VoiceModelItem> _voiceModelsSelection = new();
@@ -136,11 +182,22 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<LogFileItem> _serverLogFiles = new();
     private readonly ObservableCollection<SlotBindingItem> _hubertSlotItems = new();
     private readonly ObservableCollection<SlotBindingItem> _rmvpeSlotItems = new();
+    private readonly ObservableCollection<SlotBindingItem> _pymssWeightSlotItems = new();
+    private readonly ObservableCollection<SlotBindingItem> _pymssConfigSlotItems = new();
+    private readonly ObservableCollection<SlotBindingItem> _pretrainedGeneratorSlotItems = new();
+    private readonly ObservableCollection<SlotBindingItem> _pretrainedDiscriminatorSlotItems = new();
+    private readonly ObservableCollection<TrainingJobItem> _trainingJobs = new();
+    private readonly ObservableCollection<TrainingAudioItem> _trainingAudioFiles = new();
+    private readonly ObservableCollection<TrainingSpeakerGroup> _trainingSpeakerGroups = new();
+    private readonly HashSet<string> _hiddenTrainingAudioFiles = new(StringComparer.OrdinalIgnoreCase);
+    private bool _trainingNameAutoManaged = true;
+    private bool _settingTrainingName;
+    private bool _trainingOrganizePending;
     private string _inlinePendingPth = string.Empty;
     private string _inlinePendingIndex = string.Empty;
     private readonly VoiceModelItem _rawVoiceModelItem = new() { Id = VoiceModelItem.RawId, Name = "输出原声", Pth = string.Empty, Index = string.Empty, IsActive = false, ShowStatusDot = false };
     private readonly VoiceModelItem _serverRawVoiceModelItem = new() { Id = VoiceModelItem.ServerRawId, Name = "输出原声(经服务器)", Pth = string.Empty, Index = string.Empty, IsActive = false, ShowStatusDot = false };
-    private readonly JitterEstimator _jitterEstimator = new();
+    private readonly JitterEstimator _jitterEstimator = new() { DeviceBufferMs = AudioDeviceBufferMs };
     private readonly ConcurrentQueue<byte[]> _audioSendQueue = new();
     private SemaphoreSlim? _audioSendSignal;
     private readonly List<LatencySample> _latencySamples = new();
@@ -149,12 +206,22 @@ public partial class MainWindow : Window
     private readonly List<ServerFileItem> _uploadingFiles = new();
     private readonly Dictionary<string, ServerFileItem> _serverFileCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _boundFiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _expandedServerFolders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ServerFileItem> _serverFolderCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _serverFolderAnimationVersions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<TextBox, int> _sliderEditAnimationVersions = new();
+    private readonly HashSet<ContextMenu> _removeMenusAnimatingClose = new();
+    private readonly HashSet<ContextMenu> _removeMenusAllowedToClose = new();
+    private int _serverFileReflowVersion;
     private readonly Dictionary<string, HashSet<string>> _slotAllowedExt = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, ServerFileItem> _uploadItemsById = new();
     private readonly ConcurrentDictionary<string, long> _uploadOffsetCorrections = new();
     private readonly SemaphoreSlim _uploadSerialLock = new(1, 1);
+    private TaskCompletionSource<HubRepositorySnapshot>? _hubRepositoryTcs;
+    private readonly ConcurrentDictionary<string, HubDownloadClientOperation> _hubDownloadOperations = new();
 
     private bool _suppressSlotSelectionChanged;
+    private bool _suppressModelCardSelectionChanged;
     private string? _selectedVoiceModelId;
     private string? _prevSelectedVoiceModelId;
     private bool _debugMode;
@@ -167,33 +234,41 @@ public partial class MainWindow : Window
     private List<string>? _activeDragFilenames;
     private string? _selectedInputDeviceId;
     private string? _selectedOutputDeviceId;
+    private bool _useLocalServer;
+    private string _localServerDirectory = AppPaths.DefaultLocalServerDirectory;
+    private bool _localServerEnvironmentVerified;
+    private bool _connectionActionBusy;
     private string _fileSortMode = "time_desc";
     private bool _hideBoundFiles;
     private string _recentUnloadedVoiceModelId = string.Empty;
     private string? _pendingPreloadModelId;
+    private string _lastBaseModelSlotWarning = string.Empty;
     private readonly HashSet<string> _failedVoiceModelIds = new(StringComparer.Ordinal);
     private string _modelPath = string.Empty;
     private string _indexPath = string.Empty;
-    private int _f0UpKey;
-    private float _blockTime = 0.16f;
-    private float _crossfadeLength = 0.04f;
-    private float _extraTime = 1.0f;
+    private int _speakerId = InferenceDefaults.SpeakerId;
+    private int _f0UpKey = InferenceDefaults.F0UpKey;
+    private float _blockTime = InferenceDefaults.BlockTimeSeconds;
+    private float _crossfadeLength = InferenceDefaults.CrossfadeSeconds;
+    private float _extraTime = InferenceDefaults.ExtraTimeSeconds;
     private int _serverStreamChunkMs = 20;
-    private float _formantShift;
-    private string _f0Method = "rmvpe";
-    private float _indexRate = 0.5f;
-    private float _silenceDbThreshold = -70.0f;
-    private float _silenceGateAtten;
-    private bool _inputNoiseReduce;
-    private bool _outputNoiseReduce;
-    private float _noiseReducePropDecrease = 0.9f;
-    private float _rmsMixRate = 0.8f;
+    private float _formantShift = InferenceDefaults.FormantShift;
+    private string _f0Method = InferenceDefaults.F0Method;
+    private float _indexRate = InferenceDefaults.IndexRate;
+    private float _silenceDbThreshold = InferenceDefaults.SilenceDbThreshold;
+    private float _silenceGateAtten = InferenceDefaults.SilenceGateAttenuation;
+    private bool _inputNoiseReduce = InferenceDefaults.InputNoiseReduce;
+    private bool _outputNoiseReduce = InferenceDefaults.OutputNoiseReduce;
+    private float _noiseReducePropDecrease = InferenceDefaults.NoiseReduceStrength;
+    private float _rmsMixRate = InferenceDefaults.RmsMixRate;
 
     private readonly Dictionary<string, object> _lastSentConfig = new();
     private long _configSeq;
     private long _lastSentConfigSeq;
     private string? _lastConfigHashRetry;
     private DispatcherTimer? _realtimeConfigDebounceTimer;
+    private DispatcherTimer? _trainingPollTimer;
+    private DispatcherTimer? _settingsSaveTimer;
     private int _realtimeConfigDebouncePending;
 
     private bool _useAdaptiveBuffer = true;
@@ -232,13 +307,19 @@ public partial class MainWindow : Window
     private uint _lastOutputSequence;
     private bool _hasOutputSequence;
     private int _effectiveServerBlockMs;
+    private int _effectiveServerChunkMs;
     private int _pendingLatencyReset;
+    private long _lastLatencyUiUpdateNs;
     private const double LatencyEmaAlpha = 0.2;
     private bool _isPlaying;
     private int _captureActive;
     private bool _playbackStarted;
+    private int _adaptiveRebuffering;
+    private int _adaptiveUnderrunCount;
+    private long _lastAdaptiveStatusUpdateNs;
     private bool _bypassServerVoice;
     private bool _serverPassthroughVoice;
+    private bool _serverConfigurationAccepted;
 
     // 波形显示
     // 声卡实际播放每累计 20ms 样本就生成一对输入/输出 RMS 点，分辨率与网络切片无关。
@@ -279,22 +360,31 @@ public partial class MainWindow : Window
     private double _mainTabUnderlineToWidth;
     private long _mainTabUnderlineStartTick;
     private const double MainTabUnderlineAnimMs = 220.0;
+    private TranslateTransform? _mainTabPageTransform;
+    private int _lastMainTabIndex;
+    private int _mainTabPageAnimationVersion;
 
     public MainWindow()
     {
         Program.AppendStartupTrace("MainWindow: ctor enter");
         InitializeComponent();
+        InitializeMainTabPageAnimation();
         KeyDown += MainWindow_KeyDown;
         MainTabControl.SelectionChanged += OnMainTabControlSelectionChanged;
         Opened += (_, _) => Dispatcher.UIThread.Post(() => UpdateMainTabHeaderVisual(false), DispatcherPriority.Loaded);
         MainTabsHeaderGrid.SizeChanged += (_, _) => UpdateMainTabHeaderVisual(false);
         AddHandler(InputElement.PointerPressedEvent, GlobalPointerPressed_CommitSliderEdit, RoutingStrategies.Tunnel);
+        AddHandler(InputElement.PointerPressedEvent, GlobalPointerPressed_ClearModelCardSelection, RoutingStrategies.Tunnel);
         PointerMoved += TrackHover;
         PointerExited += (_, _) => { _lastHovered?.Classes.Remove("hover"); _lastHovered = null; };
         Program.AppendStartupTrace("MainWindow: InitializeComponent completed");
 
         // Set up drag-drop handlers for slot borders
-        foreach (var border in new[] { HubertSlotBorder, RmvpeSlotBorder })
+        foreach (var border in new[]
+                 {
+                     HubertSlotBorder, RmvpeSlotBorder, PymssWeightSlotBorder, PymssConfigSlotBorder,
+                     PretrainedGeneratorSlotBorder, PretrainedDiscriminatorSlotBorder,
+                 })
         {
             border.AddHandler(DragDrop.DragOverEvent, SlotBorder_DragOver);
             border.AddHandler(DragDrop.DropEvent, SlotBorder_Drop);
@@ -329,6 +419,21 @@ public partial class MainWindow : Window
         ServerLogFilesComboBox.ItemsSource = _serverLogFiles;
         HubertSlotListBox.ItemsSource = _hubertSlotItems;
         RmvpeSlotListBox.ItemsSource = _rmvpeSlotItems;
+        PymssWeightSlotListBox.ItemsSource = _pymssWeightSlotItems;
+        PymssConfigSlotListBox.ItemsSource = _pymssConfigSlotItems;
+        PretrainedGeneratorSlotListBox.ItemsSource = _pretrainedGeneratorSlotItems;
+        PretrainedDiscriminatorSlotListBox.ItemsSource = _pretrainedDiscriminatorSlotItems;
+        _hubertSlotItems.CollectionChanged += (_, _) => UpdateSlotPlaceholderVisibility();
+        _rmvpeSlotItems.CollectionChanged += (_, _) => UpdateSlotPlaceholderVisibility();
+        _pymssWeightSlotItems.CollectionChanged += (_, _) => UpdateSlotPlaceholderVisibility();
+        _pymssConfigSlotItems.CollectionChanged += (_, _) => UpdateSlotPlaceholderVisibility();
+        _pretrainedGeneratorSlotItems.CollectionChanged += (_, _) => UpdateSlotPlaceholderVisibility();
+        _pretrainedDiscriminatorSlotItems.CollectionChanged += (_, _) => UpdateSlotPlaceholderVisibility();
+        UpdateSlotPlaceholderVisibility();
+        TrainingJobsListBox.ItemsSource = _trainingJobs;
+        TrainingSpeakerGroupsList.ItemsSource = _trainingSpeakerGroups;
+        _trainingNameAutoManaged = true;
+        UpdateSuggestedTrainingName();
         FileSortComboBox.SelectedIndex = 0;
 
         _client.LogReceived += Client_OnLogReceived;
@@ -338,12 +443,29 @@ public partial class MainWindow : Window
 
     _realtimeConfigDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
     _realtimeConfigDebounceTimer.Tick += async (_, _) => await FlushRealtimeConfigAsync();
+        _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _settingsSaveTimer.Tick += (_, _) =>
+        {
+            _settingsSaveTimer.Stop();
+            SaveClientSettingsNow();
+        };
+        _trainingPollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _trainingPollTimer.Tick += async (_, _) =>
+        {
+            if (_client.IsConnected)
+            {
+                await _client.SendCommandAsync(new { command = "training_list" });
+            }
+        };
+        _trainingPollTimer.Start();
         Program.AppendStartupTrace("MainWindow: debounce timer prepared");
 
         SeedPreviewData();
         Program.AppendStartupTrace("MainWindow: preview data seeded");
+        LoadClientSettings();
         InitializeSettingsUi();
         _uiInitialized = true;
+        RefreshAdaptiveBufferStatus(GetEffectiveTargetBufferMs(), force: true);
         Program.AppendStartupTrace("MainWindow: settings initialized");
         RefreshAudioDevices();
         Program.AppendStartupTrace("MainWindow: audio devices refreshed");
@@ -365,6 +487,100 @@ public partial class MainWindow : Window
         // ServerRaw hidden until debug mode (F12 × 5)
         _selectedVoiceModelId = VoiceModelItem.RawId;
         _bypassServerVoice = true; // default to bypass mode (matches initial UI selection)
+    }
+
+    private void LoadClientSettings()
+    {
+        var settings = ClientSettingsStore.Load();
+        var savedServerUri = settings.ServerUri?.Trim() ?? string.Empty;
+        ServerUriTextBox.Text = string.Equals(savedServerUri, DefaultServerUri, StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : savedServerUri;
+        _useLocalServer = string.Equals(settings.ConnectionMode, "local", StringComparison.OrdinalIgnoreCase);
+        _localServerDirectory = NormalizeLocalServerDirectory(settings.LocalServerDirectory);
+        _localServerEnvironmentVerified = settings.LocalServerEnvironmentVerified
+            && LocalServerEnvironmentChecker.HasInstalledEnvironment(_localServerDirectory);
+        UpdateConnectionModeUi();
+
+        _f0UpKey = Math.Clamp(settings.F0UpKey, -12, 12);
+        _blockTime = Math.Clamp(settings.BlockTimeSeconds, 0.08f, 1.0f);
+        _crossfadeLength = Math.Clamp(settings.CrossfadeSeconds, 0.01f, 0.04f);
+        _extraTime = Math.Clamp(settings.ExtraTimeSeconds, 0.2f, 4.0f);
+        _serverStreamChunkMs = Math.Clamp(settings.ServerStreamChunkMs, 10, 120);
+        _formantShift = Math.Clamp(settings.FormantShift, -2.0f, 2.0f);
+        _f0Method = string.Equals(settings.F0Method, "fcpe", StringComparison.OrdinalIgnoreCase)
+            ? "fcpe"
+            : "rmvpe";
+        _indexRate = Math.Clamp(settings.IndexRate, 0.0f, 1.0f);
+        _silenceDbThreshold = Math.Clamp(settings.SilenceDbThreshold, -90.0f, -20.0f);
+        _silenceGateAtten = Math.Clamp(settings.SilenceGateAttenuation, 0.0f, 1.0f);
+        _inputNoiseReduce = settings.InputNoiseReduce;
+        _outputNoiseReduce = settings.OutputNoiseReduce;
+        _noiseReducePropDecrease = Math.Clamp(settings.NoiseReduceStrength, 0.0f, 1.0f);
+        _rmsMixRate = Math.Clamp(settings.RmsMixRate, 0.0f, 1.0f);
+
+        _useAdaptiveBuffer = settings.UseAdaptiveBuffer;
+        _targetBufferLatency = Math.Clamp(settings.TargetBufferLatencyMs, 20, 500);
+        _maxBufferMs = Math.Clamp(settings.MaxBufferMs, 100, 3000);
+        _bufferCapacityMs = Math.Clamp(settings.BufferCapacityMs, 1000, 8000);
+        _networkSliceMs = Math.Clamp(settings.NetworkSliceMs, 10, 120);
+        if (!_useAdaptiveBuffer && _serverStreamChunkMs > _targetBufferLatency)
+        {
+            _targetBufferLatency = _serverStreamChunkMs;
+        }
+        _jitterEstimator.JitterFactor = Math.Clamp(settings.JitterFactor, 1.0, 5.0);
+        _jitterEstimator.Alpha = Math.Clamp(settings.JitterAlpha, 0.80, 0.99);
+        _jitterEstimator.MaxBufferMs = Math.Clamp(settings.JitterMaxBufferMs, 20.0, 500.0);
+        _jitterEstimator.MinNetworkProtectionMs = Math.Clamp(settings.MinNetworkProtectionMs, 0.0, 120.0);
+    }
+
+    private void ScheduleClientSettingsSave()
+    {
+        if (!_uiInitialized || _settingsSaveTimer is null) return;
+        _settingsSaveTimer.Stop();
+        _settingsSaveTimer.Start();
+    }
+
+    private void SaveClientSettingsNow()
+    {
+        if (!_uiInitialized) return;
+        try
+        {
+            ClientSettingsStore.Save(new ClientSettings
+            {
+                ServerUri = ServerUriTextBox.Text?.Trim() ?? string.Empty,
+                ConnectionMode = _useLocalServer ? "local" : "remote",
+                LocalServerDirectory = _localServerDirectory,
+                LocalServerEnvironmentVerified = _localServerEnvironmentVerified,
+                F0UpKey = _f0UpKey,
+                BlockTimeSeconds = _blockTime,
+                CrossfadeSeconds = _crossfadeLength,
+                ExtraTimeSeconds = _extraTime,
+                ServerStreamChunkMs = _serverStreamChunkMs,
+                FormantShift = _formantShift,
+                F0Method = _f0Method,
+                IndexRate = _indexRate,
+                SilenceDbThreshold = _silenceDbThreshold,
+                SilenceGateAttenuation = _silenceGateAtten,
+                InputNoiseReduce = _inputNoiseReduce,
+                OutputNoiseReduce = _outputNoiseReduce,
+                NoiseReduceStrength = _noiseReducePropDecrease,
+                RmsMixRate = _rmsMixRate,
+                UseAdaptiveBuffer = _useAdaptiveBuffer,
+                TargetBufferLatencyMs = _targetBufferLatency,
+                MaxBufferMs = _maxBufferMs,
+                BufferCapacityMs = _bufferCapacityMs,
+                NetworkSliceMs = _networkSliceMs,
+                JitterFactor = _jitterEstimator.JitterFactor,
+                JitterAlpha = _jitterEstimator.Alpha,
+                JitterMaxBufferMs = _jitterEstimator.MaxBufferMs,
+                MinNetworkProtectionMs = _jitterEstimator.MinNetworkProtectionMs,
+            });
+        }
+        catch (Exception ex)
+        {
+            Log($"保存客户端参数失败: {ex.Message}");
+        }
     }
 
     private void InitializeSettingsUi()
@@ -389,7 +605,7 @@ public partial class MainWindow : Window
         JitterFactorSlider.Value = _jitterEstimator.JitterFactor;
         JitterAlphaSlider.Value = _jitterEstimator.Alpha;
         JitterMaxBufferSlider.Value = _jitterEstimator.MaxBufferMs;
-        MinBufferSlider.Value = _jitterEstimator.MinBufferMs;
+        MinBufferSlider.Value = _jitterEstimator.MinNetworkProtectionMs;
         SetSegmentedToggle(AutoBufferBtn, _useAdaptiveBuffer);
         SetSegmentedToggle(ManualBufferBtn, !_useAdaptiveBuffer);
         SetAnimatedVisibility(AutoBufferPanel, _useAdaptiveBuffer);
@@ -406,23 +622,23 @@ public partial class MainWindow : Window
         F0UpKeyValueText.Text = $"{F0UpKeySlider.Value:F0}";
         IndexRateValueText.Text = IndexRateSlider.Value.ToString("0.00");
         FormantValueText.Text = FormantSlider.Value.ToString("0.00");
-        BlockTimeValueText.Text = $"{BlockTimeSlider.Value:F0} ms";
-        CrossfadeValueText.Text = $"{CrossfadeSlider.Value:F0} ms";
-        ExtraTimeValueText.Text = $"{ExtraTimeSlider.Value:F0} ms";
-        ServerStreamChunkValueText.Text = $"{ServerStreamChunkSlider.Value:F0} ms";
-        SilenceDbValueText.Text = $"{SilenceDbSlider.Value:F0} dB";
+        BlockTimeValueText.Text = $"{BlockTimeSlider.Value:F0}";
+        CrossfadeValueText.Text = $"{CrossfadeSlider.Value:F0}";
+        ExtraTimeValueText.Text = $"{ExtraTimeSlider.Value:F0}";
+        ServerStreamChunkValueText.Text = $"{ServerStreamChunkSlider.Value:F0}";
+        SilenceDbValueText.Text = $"{SilenceDbSlider.Value:F0}";
         SilenceGateAttenValueText.Text = SilenceGateAttenSlider.Value.ToString("0.00");
         NoiseReduceStrengthValueText.Text = NoiseReduceStrengthSlider.Value.ToString("0.00");
         RmsMixRateValueText.Text = RmsMixRateSlider.Value.ToString("0.00");
 
         JitterFactorValueText.Text = JitterFactorSlider.Value.ToString("0.0");
         JitterAlphaValueText.Text = JitterAlphaSlider.Value.ToString("0.00");
-        JitterMaxBufferValueText.Text = $"{JitterMaxBufferSlider.Value:F0} ms";
-        MinBufferValueText.Text = $"{MinBufferSlider.Value:F0} ms";
-        TargetBufferValueText.Text = $"{TargetBufferSlider.Value:F0} ms";
-        MaxBufferValueText.Text = $"{MaxBufferSlider.Value:F0} ms";
-        BufferCapacityValueText.Text = $"{BufferCapacitySlider.Value:F0} ms";
-        NetworkSliceValueText.Text = $"{NetworkSliceSlider.Value:F0} ms";
+        JitterMaxBufferValueText.Text = $"{JitterMaxBufferSlider.Value:F0}";
+        MinBufferValueText.Text = $"{MinBufferSlider.Value:F0}";
+        TargetBufferValueText.Text = $"{TargetBufferSlider.Value:F0}";
+        MaxBufferValueText.Text = $"{MaxBufferSlider.Value:F0}";
+        BufferCapacityValueText.Text = $"{BufferCapacitySlider.Value:F0}";
+        NetworkSliceValueText.Text = $"{NetworkSliceSlider.Value:F0}";
     }
 
     private static void SetAnimatedVisibility(Control control, bool isVisible)
@@ -434,6 +650,60 @@ public partial class MainWindow : Window
 
     // ── 自定义页签头横条动画 ─────────────────────────────────────────────────────────
 
+    private void InitializeMainTabPageAnimation()
+    {
+        _mainTabPageTransform = new TranslateTransform();
+        MainTabControl.RenderTransform = _mainTabPageTransform;
+        MainTabControl.RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative);
+        _lastMainTabIndex = Math.Max(0, MainTabControl.SelectedIndex);
+    }
+
+    private void AnimateMainTabPageIn(int targetIndex)
+    {
+        if (_mainTabPageTransform is null)
+        {
+            _lastMainTabIndex = targetIndex;
+            return;
+        }
+
+        var direction = targetIndex >= _lastMainTabIndex ? 1.0 : -1.0;
+        _lastMainTabIndex = targetIndex;
+        var animationVersion = ++_mainTabPageAnimationVersion;
+
+        // First establish the incoming page pose without animating, then let it settle
+        // into place. The short directional offset keeps navigation light and readable.
+        MainTabControl.Transitions = new Transitions();
+        _mainTabPageTransform.Transitions = new Transitions();
+        MainTabControl.Opacity = 0.72;
+        _mainTabPageTransform.X = direction * 14.0;
+
+        MainTabControl.Transitions = new Transitions
+        {
+            new DoubleTransition
+            {
+                Property = Visual.OpacityProperty,
+                Duration = TimeSpan.FromMilliseconds(190),
+                Easing = new CubicEaseOut(),
+            },
+        };
+        _mainTabPageTransform.Transitions = new Transitions
+        {
+            new DoubleTransition
+            {
+                Property = TranslateTransform.XProperty,
+                Duration = TimeSpan.FromMilliseconds(230),
+                Easing = new CubicEaseOut(),
+            },
+        };
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (animationVersion != _mainTabPageAnimationVersion) return;
+            MainTabControl.Opacity = 1.0;
+            _mainTabPageTransform.X = 0.0;
+        }, DispatcherPriority.Loaded);
+    }
+
     private static double EaseInOut(double t) =>
         t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
@@ -442,6 +712,7 @@ public partial class MainWindow : Window
         0 => MainTabHeaderBtn0,
         1 => MainTabHeaderBtn1,
         2 => MainTabHeaderBtn2,
+        3 => MainTabHeaderBtn3,
         _ => null,
     };
 
@@ -449,12 +720,17 @@ public partial class MainWindow : Window
     {
         if (sender is not Button button || button.Tag is not string tag) return;
         if (!int.TryParse(tag, out var idx)) return;
-        if (idx < 0 || idx > 2) return;
+        if (idx < 0 || idx > 3) return;
         MainTabControl.SelectedIndex = idx;
     }
 
     private void OnMainTabControlSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        var targetIndex = Math.Max(0, MainTabControl.SelectedIndex);
+        if (targetIndex != _lastMainTabIndex)
+        {
+            AnimateMainTabPageIn(targetIndex);
+        }
         UpdateMainTabHeaderVisual(true);
     }
 
@@ -466,6 +742,7 @@ public partial class MainWindow : Window
         MainTabHeaderBtn0.Classes.Set("active", idx == 0);
         MainTabHeaderBtn1.Classes.Set("active", idx == 1);
         MainTabHeaderBtn2.Classes.Set("active", idx == 2);
+        MainTabHeaderBtn3.Classes.Set("active", idx == 3);
 
         var selectedButton = GetMainTabHeaderButton(idx);
         if (selectedButton == null || MainTabUnderline == null) return;
@@ -538,7 +815,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            ConnectionToggleButton.IsEnabled = false;
+            _connectionActionBusy = true;
+            UpdateConnectionActionAvailability();
             if (_client.IsConnected)
             {
                 await _client.DisconnectAsync();
@@ -546,22 +824,46 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var serverUri = ServerUriTextBox.Text?.Trim() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(serverUri))
+            if (_useLocalServer)
             {
-                serverUri = DefaultServerUri;
-                ServerUriTextBox.Text = serverUri;
-                Log($"未指定服务器地址，使用本地默认地址：{serverUri}");
+                if (!_localServerEnvironmentVerified)
+                {
+                    Log("请先在本地环境设置中检查依赖并保存。");
+                    ShowErrorToast("本地环境尚未就绪");
+                    return;
+                }
+                if (!LocalServerEnvironmentChecker.HasInstalledEnvironment(_localServerDirectory))
+                {
+                    _localServerEnvironmentVerified = false;
+                    UpdateLocalEnvironmentUi();
+                    ScheduleClientSettingsSave();
+                    Log("本地 Server 环境已失效，请重新检查依赖。");
+                    ShowErrorToast("请重新检查本地环境");
+                    return;
+                }
+                Log("正在启动本地 Server 并建立私有进程管道...");
+                await _client.ConnectLocalAsync(_localServerDirectory);
             }
-
-            if (!Uri.TryCreate(serverUri, UriKind.Absolute, out _))
+            else
             {
-                Log("无效的 URI 格式。");
-                return;
-            }
+                var serverUri = ServerUriTextBox.Text?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(serverUri))
+                {
+                    serverUri = DefaultServerUri;
+                    Log($"未指定服务器地址，使用本地默认地址：{serverUri}");
+                }
 
-            await _client.ConnectAsync(serverUri);
+                if (!Uri.TryCreate(serverUri, UriKind.Absolute, out _))
+                {
+                    Log("无效的 URI 格式。");
+                    return;
+                }
+                await _client.ConnectAsync(serverUri);
+            }
+            _serverConfigurationAccepted = false;
             UpdateConnectionUi(true);
+            ScheduleClientSettingsSave();
+            await SendConfigurationAsync(true);
             await RequestInitialDataAsync();
         }
         catch (Exception ex)
@@ -572,7 +874,8 @@ public partial class MainWindow : Window
         }
         finally
         {
-            ConnectionToggleButton.IsEnabled = true;
+            _connectionActionBusy = false;
+            UpdateConnectionActionAvailability();
         }
     }
 
@@ -602,13 +905,266 @@ public partial class MainWindow : Window
         Log("已刷新音频设备列表。");
     }
 
+    private void RemoveContextMenu_OnOpened(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu)
+        {
+            return;
+        }
+
+        _removeMenusAnimatingClose.Remove(menu);
+        _removeMenusAllowedToClose.Remove(menu);
+        menu.IsHitTestVisible = true;
+
+        // Establish the opening pose before the popup is rendered, then ease it
+        // into place. The transform is owned by this menu instance so template
+        // menus never animate one another.
+        menu.Transitions = new Transitions();
+        menu.Opacity = 0.0;
+        var transform = new TranslateTransform { Y = -6.0 };
+        menu.RenderTransform = transform;
+        menu.RenderTransformOrigin = new RelativePoint(0.5, 0.0, RelativeUnit.Relative);
+        menu.Transitions = new Transitions
+        {
+            new DoubleTransition
+            {
+                Property = Visual.OpacityProperty,
+                Duration = TimeSpan.FromMilliseconds(135),
+                Easing = new CubicEaseOut(),
+            },
+        };
+        transform.Transitions = new Transitions
+        {
+            new DoubleTransition
+            {
+                Property = TranslateTransform.YProperty,
+                Duration = TimeSpan.FromMilliseconds(165),
+                Easing = new CubicEaseOut(),
+            },
+        };
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!menu.IsOpen)
+            {
+                return;
+            }
+
+            menu.Opacity = 1.0;
+            transform.Y = 0.0;
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void RemoveContextMenu_OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (sender is not ContextMenu menu)
+        {
+            return;
+        }
+
+        // The second close request is ours, after the fade-out has completed.
+        if (_removeMenusAllowedToClose.Remove(menu))
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        if (!_removeMenusAnimatingClose.Add(menu))
+        {
+            return;
+        }
+
+        menu.IsHitTestVisible = false;
+        menu.Opacity = 0.0;
+        if (menu.RenderTransform is TranslateTransform transform)
+        {
+            transform.Y = -4.0;
+        }
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (!_removeMenusAnimatingClose.Remove(menu) || !menu.IsOpen)
+            {
+                return;
+            }
+
+            _removeMenusAllowedToClose.Add(menu);
+            menu.Close();
+        }, TimeSpan.FromMilliseconds(145));
+    }
+
+    private void RemoveContextMenu_OnClosed(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu)
+        {
+            return;
+        }
+
+        _removeMenusAnimatingClose.Remove(menu);
+        _removeMenusAllowedToClose.Remove(menu);
+        menu.IsHitTestVisible = true;
+        menu.Opacity = 0.0;
+    }
+
     private async void RefreshServerFiles_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         await _client.SendCommandAsync(new { command = "files_list" });
+    }
+
+    private async void HubDownload_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (!_client.IsConnected) return;
+        var destinationOptions = _serverFolderCache.Keys
+            .Append("downloads")
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path.Count(character => character == '/'))
+            .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var dialog = new HubDownloadWindow(BrowseHubRepositoryAsync, DownloadHubFilesAsync, destinationOptions);
+        await dialog.ShowDialog<bool>(this);
+    }
+
+    private async Task<HubRepositorySnapshot> BrowseHubRepositoryAsync(
+        string provider,
+        string repository,
+        string revision)
+    {
+        if (!_client.IsConnected) throw new InvalidOperationException("尚未连接服务器");
+        var completion = new TaskCompletionSource<HubRepositorySnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var previous = Interlocked.Exchange(ref _hubRepositoryTcs, completion);
+        previous?.TrySetCanceled();
+        try
+        {
+            await _client.SendCommandAsync(new
+            {
+                command = "hub_repo_list",
+                provider,
+                repo = repository,
+                revision,
+            });
+            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(90));
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _hubRepositoryTcs, null, completion);
+        }
+    }
+
+    private void ConnectionModeButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_client.IsConnected || sender is not Button button) return;
+        _useLocalServer = string.Equals(button.Tag?.ToString(), "local", StringComparison.OrdinalIgnoreCase);
+        UpdateConnectionModeUi();
+        ScheduleClientSettingsSave();
+    }
+
+    private void UpdateConnectionModeUi()
+    {
+        RemoteConnectionModeButton.Classes.Set("active", !_useLocalServer);
+        LocalConnectionModeButton.Classes.Set("active", _useLocalServer);
+        ServerUriTextBox.IsVisible = !_useLocalServer;
+        LocalEnvironmentStatusPanel.IsVisible = _useLocalServer;
+        LocalEnvironmentSettingsButton.IsVisible = _useLocalServer;
+        ConnectionToggleButton.Content = _useLocalServer ? "启动并连接" : "连接";
+        ConnectionToggleButton.MinWidth = _useLocalServer ? 94 : 72;
+        UpdateLocalEnvironmentUi();
+        UpdateConnectionActionAvailability();
+    }
+
+    private async void LocalEnvironmentSettings_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_client.IsConnected || _connectionActionBusy) return;
+        var dialog = new LocalEnvironmentWindow(_localServerDirectory, _localServerEnvironmentVerified);
+        var configuration = await dialog.ShowDialog<LocalEnvironmentConfiguration?>(this);
+        if (configuration is null) return;
+
+        _localServerDirectory = Path.GetFullPath(configuration.ServerDirectory);
+        _localServerEnvironmentVerified = configuration.IsVerified;
+        UpdateLocalEnvironmentUi();
+        UpdateConnectionActionAvailability();
+        ScheduleClientSettingsSave();
+        Log($"本地环境设置已保存：{_localServerDirectory}");
+    }
+
+    private static string NormalizeLocalServerDirectory(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return AppPaths.DefaultLocalServerDirectory;
+        try
+        {
+            return Path.GetFullPath(directory);
+        }
+        catch
+        {
+            return AppPaths.DefaultLocalServerDirectory;
+        }
+    }
+
+    private void UpdateLocalEnvironmentUi()
+    {
+        LocalEnvironmentStatusPanel.Classes.Set("ready", _localServerEnvironmentVerified);
+        LocalEnvironmentStatusIcon.Kind = _localServerEnvironmentVerified
+            ? MaterialIconKind.CheckCircleOutline
+            : MaterialIconKind.ClockOutline;
+        LocalEnvironmentStatusTextBlock.Text = _localServerEnvironmentVerified
+            ? "本地环境已就绪"
+            : "本地环境未设置";
+        ToolTip.SetTip(LocalEnvironmentStatusPanel, _localServerDirectory);
+    }
+
+    private void UpdateConnectionActionAvailability()
+    {
+        var canEditConnection = !_client.IsConnected && !_connectionActionBusy;
+        ServerUriTextBox.IsEnabled = canEditConnection;
+        LocalEnvironmentSettingsButton.IsEnabled = canEditConnection;
+        RemoteConnectionModeButton.IsEnabled = canEditConnection;
+        LocalConnectionModeButton.IsEnabled = canEditConnection;
+        ConnectionToggleButton.IsEnabled = !_connectionActionBusy
+            && (!_useLocalServer || _localServerEnvironmentVerified);
+    }
+
+    private async Task<HubDownloadResult> DownloadHubFilesAsync(
+        HubDownloadRequest request,
+        IProgress<HubDownloadProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        if (!_client.IsConnected) throw new InvalidOperationException("尚未连接服务器");
+        var requestId = Guid.NewGuid().ToString("D");
+        var completion = new TaskCompletionSource<HubDownloadResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var operation = new HubDownloadClientOperation { Completion = completion, Progress = progress };
+        if (!_hubDownloadOperations.TryAdd(requestId, operation))
+        {
+            throw new InvalidOperationException("无法创建下载任务");
+        }
+
+        using var cancellation = cancellationToken.Register(() =>
+        {
+            _ = _client.SendCommandAsync(new { command = "hub_download_cancel", request_id = requestId });
+        });
+        try
+        {
+            await _client.SendCommandAsync(new
+            {
+                command = "hub_download_start",
+                request_id = requestId,
+                provider = request.Provider,
+                repo = request.RepoId,
+                revision = request.Revision,
+                destination = request.Destination,
+                paths = request.Paths,
+            });
+            return await completion.Task.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            _hubDownloadOperations.TryRemove(requestId, out _);
+        }
     }
 
     private async void UploadFile_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         if (_isPlaying)
         {
             Log("上传会占用同一条 WebSocket 发送通道，请先停止变声。");
@@ -616,14 +1172,133 @@ public partial class MainWindow : Window
         }
 
         var files = await PickFilesAsync("选择上传文件", allowMultiple: true);
+        if (!_client.IsConnected) return;
         foreach (var filePath in files)
         {
             await UploadFileToServerAsync(filePath);
         }
     }
 
+    private sealed class ServerFileLayoutSnapshot
+    {
+        public Dictionary<ServerFileItem, double> VisiblePositions { get; } = new();
+        public Dictionary<ServerFileItem, int> ItemIndices { get; } = new();
+        public double ItemStride { get; set; }
+        public Vector? ScrollOffset { get; set; }
+    }
+
+    private async void UploadFolder_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (!_client.IsConnected) return;
+        if (_isPlaying)
+        {
+            Log("上传会占用同一条 WebSocket 发送通道，请先停止变声。");
+            return;
+        }
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel?.StorageProvider == null) return;
+        var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = "选择训练音频文件夹",
+            AllowMultiple = false,
+        });
+        var folderPath = folders.FirstOrDefault()?.TryGetLocalPath();
+        if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath)) return;
+        if (!_client.IsConnected) return;
+
+        var enumeration = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+        };
+        var audioFiles = Directory.EnumerateFiles(folderPath, "*", enumeration)
+            .Where(IsTrainingAudioFile)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .Take(20001)
+            .ToList();
+        if (audioFiles.Count == 0)
+        {
+            Log("所选文件夹中没有受支持的音频文件。");
+            return;
+        }
+        if (audioFiles.Count > 20000)
+        {
+            Log("所选文件夹中的音频超过 20000 个，请拆分后上传。");
+            return;
+        }
+        Log($"开始上传训练文件夹，共 {audioFiles.Count} 个音频文件。");
+        var rootName = new DirectoryInfo(folderPath).Name;
+        var folderUpload = new ServerFileItem
+        {
+            Name = rootName,
+            IsUploadFolder = true,
+            IsExpanded = true,
+            IsUploading = true,
+            Status = "准备上传文件夹",
+            ModifiedAt = DateTimeOffset.Now,
+        };
+        var uploadEntries = new List<(string FilePath, string RemoteName, ServerFileItem Item)>();
+        foreach (var filePath in audioFiles)
+        {
+            var relative = Path.GetRelativePath(folderPath, filePath);
+            var remoteName = BuildTrainingRemotePath(rootName, relative);
+            var child = new ServerFileItem
+            {
+                Name = relative,
+                IsUploading = true,
+                Status = "等待上传",
+                TotalBytes = new FileInfo(filePath).Length,
+                SentBytes = 0,
+                ModifiedAt = DateTimeOffset.Now,
+                UploadParent = folderUpload,
+            };
+            folderUpload.UploadChildren.Add(child);
+            uploadEntries.Add((filePath, remoteName, child));
+        }
+        folderUpload.RefreshFolderProgress();
+        _uploadingFiles.Insert(0, folderUpload);
+        RefreshServerFilesView();
+
+        var uploaded = 0;
+        foreach (var entry in uploadEntries)
+        {
+            folderUpload.Status = $"正在上传：{entry.Item.Name}";
+            if (await UploadFileToServerAsync(entry.FilePath, entry.RemoteName, entry.Item) is not null) uploaded++;
+        }
+        folderUpload.Status = uploaded == audioFiles.Count ? "文件夹上传完成" : "文件夹上传结束";
+        folderUpload.IsUploading = false;
+        Log($"训练文件夹上传完成：成功 {uploaded}/{audioFiles.Count} 个音频文件。");
+        if (uploaded != audioFiles.Count)
+        {
+            ShowErrorToast($"有 {audioFiles.Count - uploaded} 个文件上传失败");
+        }
+        _uploadingFiles.RemoveAll(item => ReferenceEquals(item, folderUpload));
+        RefreshServerFilesView();
+        await _client.SendCommandAsync(new { command = "files_list" });
+    }
+
+    private static bool IsTrainingAudioFile(string path)
+        => TrainingAudioExtensions.Contains(Path.GetExtension(path));
+
+    private static string BuildTrainingRemotePath(string rootName, string relativePath)
+    {
+        return NormalizeRemotePath($"{rootName}/{relativePath.Replace('\\', '/')}");
+    }
+
+    private static string NormalizeRemotePath(string value)
+    {
+        var parts = value.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0 || parts.Any(part => part is "." or ".."))
+        {
+            throw new InvalidOperationException("服务器文件路径无效");
+        }
+        return string.Join('/', parts);
+    }
+
     private void AddVoiceModel_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         _inlinePendingPth = string.Empty;
         _inlinePendingIndex = string.Empty;
         InlineModelNameBox.Text = string.Empty;
@@ -640,11 +1315,12 @@ public partial class MainWindow : Window
     private void InlineCancelVoiceModel_OnClick(object? sender, RoutedEventArgs e)
     {
         InlineAddVoiceModelCard.IsVisible = false;
-        AddVoiceModelButton.IsEnabled = true;
+        AddVoiceModelButton.IsEnabled = _client.IsConnected;
     }
 
     private async void InlineConfirmVoiceModel_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         var name = (InlineModelNameBox.Text ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -662,7 +1338,7 @@ public partial class MainWindow : Window
         var indexName = string.IsNullOrWhiteSpace(_inlinePendingIndex) ? string.Empty : Path.GetFileName(_inlinePendingIndex);
 
         InlineAddVoiceModelCard.IsVisible = false;
-        AddVoiceModelButton.IsEnabled = true;
+        AddVoiceModelButton.IsEnabled = _client.IsConnected;
 
         if (!_serverFileCache.ContainsKey(pthName))
         {
@@ -816,8 +1492,74 @@ public partial class MainWindow : Window
         InlineIndexText.Text = fileName;
     }
 
+    private ListBox[] GetModelCardListBoxes() =>
+    [
+        VoiceModelManagementListBox,
+        HubertSlotListBox,
+        RmvpeSlotListBox,
+        PymssWeightSlotListBox,
+        PymssConfigSlotListBox,
+        PretrainedGeneratorSlotListBox,
+        PretrainedDiscriminatorSlotListBox,
+    ];
+
+    private void ClearModelCardSelections(ListBox? except = null)
+    {
+        var previousSuppression = _suppressModelCardSelectionChanged;
+        _suppressModelCardSelectionChanged = true;
+        try
+        {
+            foreach (var listBox in GetModelCardListBoxes())
+            {
+                if (!ReferenceEquals(listBox, except) && listBox.SelectedItem != null)
+                {
+                    listBox.SelectedItem = null;
+                }
+            }
+        }
+        finally
+        {
+            _suppressModelCardSelectionChanged = previousSuppression;
+        }
+    }
+
+    private bool IsPointerInsideModelCard(object? source)
+    {
+        if (source is not Visual visual)
+        {
+            return false;
+        }
+
+        var itemContainer = visual as ListBoxItem
+            ?? visual.GetVisualAncestors().OfType<ListBoxItem>().FirstOrDefault();
+        if (itemContainer == null)
+        {
+            return false;
+        }
+
+        var owner = itemContainer.GetVisualAncestors().OfType<ListBox>().FirstOrDefault();
+        return owner != null && GetModelCardListBoxes().Any(listBox => ReferenceEquals(listBox, owner));
+    }
+
+    private void GlobalPointerPressed_ClearModelCardSelection(object? sender, PointerPressedEventArgs e)
+    {
+        if (!IsPointerInsideModelCard(e.Source))
+        {
+            ClearModelCardSelections();
+        }
+    }
+
     private void VoiceModelManagementListBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_suppressModelCardSelectionChanged)
+        {
+            return;
+        }
+
+        if (sender is ListBox { SelectedItem: not null } listBox)
+        {
+            ClearModelCardSelections(listBox);
+        }
     }
 
     private async void RemoveVoiceModel_OnContextMenuClick(object? sender, RoutedEventArgs e)
@@ -842,14 +1584,17 @@ public partial class MainWindow : Window
 
     private void ServerFilesListBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        var selectedCount = ServerFilesListBox.SelectedItems?.Count ?? 0;
-        DeleteFileButton.IsEnabled = selectedCount > 0;
-        RenameFileButton.IsEnabled = selectedCount == 1;
+        var selectedCount = ServerFilesListBox.SelectedItems?
+            .OfType<ServerFileItem>()
+            .Count(item => !item.IsFolder && !item.IsUploadFolder) ?? 0;
+        DeleteFileButton.IsEnabled = _client.IsConnected && selectedCount > 0;
+        RenameFileButton.IsEnabled = _client.IsConnected && selectedCount == 1;
     }
 
     private void DeleteSelectedFile_OnClick(object? sender, RoutedEventArgs e)
     {
-        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>().ToList() ?? [];
+        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+            .Where(item => !item.IsFolder && !item.IsUploadFolder).ToList() ?? [];
         if (selectedItems.Count == 0) return;
 
         if (selectedItems.Any(item => item.IsUploading))
@@ -887,7 +1632,8 @@ public partial class MainWindow : Window
     {
         if (this.Resources.TryGetValue("DeleteConfirmFlyout", out var r) && r is Avalonia.Controls.Flyout flyout) flyout.Hide();
 
-        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>().ToList() ?? [];
+        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+            .Where(item => !item.IsFolder && !item.IsUploadFolder).ToList() ?? [];
         foreach (var item in selectedItems)
         {
             await _client.SendCommandAsync(new { command = "files_delete", name = item.Name });
@@ -897,10 +1643,13 @@ public partial class MainWindow : Window
 
     private void RenameSelectedFile_OnClick(object? sender, RoutedEventArgs e)
     {
-        if (ServerFilesListBox.SelectedItems?.Count != 1 || ServerFilesListBox.SelectedItem is not ServerFileItem item)
+        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+            .Where(file => !file.IsFolder && !file.IsUploadFolder).ToList() ?? [];
+        if (selectedItems.Count != 1)
         {
             return;
         }
+        var item = selectedItems[0];
 
         if (item.IsUploading)
         {
@@ -908,7 +1657,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        item.EditingName = item.Name;
+        item.EditingName = item.DisplayName;
         item.IsEditing = true;
 
         DispatcherTimer.RunOnce(() =>
@@ -928,11 +1677,22 @@ public partial class MainWindow : Window
     private async void CommitRename(ServerFileItem item, string newName)
     {
         item.IsEditing = false;
-        if (string.IsNullOrWhiteSpace(newName) || string.Equals(newName, item.Name, StringComparison.OrdinalIgnoreCase))
+        newName = newName.Trim();
+        if (string.IsNullOrWhiteSpace(newName)
+            || newName.Contains('/')
+            || newName.Contains('\\'))
+        {
+            Log("文件名不能为空，也不能包含路径分隔符。");
+            return;
+        }
+        var targetName = string.IsNullOrWhiteSpace(item.ParentPath)
+            ? newName
+            : $"{item.ParentPath}/{newName}";
+        if (string.Equals(targetName, item.Name, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
-        await _client.SendCommandAsync(new { command = "files_rename", old_name = item.Name, new_name = newName });
+        await _client.SendCommandAsync(new { command = "files_rename", old_name = item.Name, new_name = targetName });
     }
 
     private void RenameTextBox_OnKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
@@ -971,13 +1731,14 @@ public partial class MainWindow : Window
 
     private async void SlotListBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (_suppressSlotSelectionChanged)
+        if (_suppressSlotSelectionChanged || _suppressModelCardSelectionChanged)
         {
             return;
         }
 
         if (sender is ListBox listBox && listBox.SelectedItem is SlotBindingItem item)
         {
+            ClearModelCardSelections(listBox);
             await _client.SendCommandAsync(new { command = "model_activate_in_slot", slot = item.Slot, filename = item.FileName });
         }
     }
@@ -987,9 +1748,59 @@ public partial class MainWindow : Window
 
     private PointerPressedEventArgs? _pendingDragEvent;
 
-    private void ServerFileItem_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    private async void ServerFileItem_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
         var point = e.GetCurrentPoint(sender as Visual);
+        if (point.Properties.IsLeftButtonPressed
+            && (sender as Control)?.DataContext is ServerFileItem { IsFolder: true } treeFolder)
+        {
+            var previousLayout = CaptureServerFileLayout();
+            // 立即作废上一轮已排队的 Loaded/Render 回调；折叠动画会延迟
+            // 150 ms 才改集合，不能等到那时才取消旧的展开回调。
+            _serverFileReflowVersion++;
+            _pendingDragEvent = null;
+            _dragCandidates = null;
+            e.Handled = true;
+            var animationVersion = _serverFolderAnimationVersions.TryGetValue(treeFolder.Name, out var currentVersion)
+                ? currentVersion + 1
+                : 1;
+            _serverFolderAnimationVersions[treeFolder.Name] = animationVersion;
+            if (_expandedServerFolders.Remove(treeFolder.Name))
+            {
+                treeFolder.IsExpanded = false;
+                var descendants = _serverFiles
+                    .Where(item => IsServerPathDescendant(item.Name, treeFolder.Name))
+                    .ToList();
+                foreach (var descendant in descendants)
+                {
+                    descendant.TreeOpacity = 0.0;
+                    descendant.TreeOffsetY = -5.0;
+                }
+                await Task.Delay(150);
+                if (_serverFolderAnimationVersions.TryGetValue(treeFolder.Name, out var latestVersion)
+                    && latestVersion == animationVersion
+                    && !_expandedServerFolders.Contains(treeFolder.Name))
+                {
+                    RefreshServerFilesView(previousLayout: previousLayout);
+                }
+            }
+            else
+            {
+                _expandedServerFolders.Add(treeFolder.Name);
+                treeFolder.IsExpanded = true;
+                RefreshServerFilesView(treeFolder.Name, previousLayout);
+            }
+            return;
+        }
+        if (point.Properties.IsLeftButtonPressed
+            && (sender as Control)?.DataContext is ServerFileItem { IsUploadFolder: true } folder)
+        {
+            folder.IsExpanded = !folder.IsExpanded;
+            _pendingDragEvent = null;
+            _dragCandidates = null;
+            e.Handled = true;
+            return;
+        }
         if (point.Properties.IsLeftButtonPressed)
         {
             _dragStartPoint = e.GetPosition(sender as Visual);
@@ -1000,7 +1811,8 @@ public partial class MainWindow : Window
             // If the pressed item is already in the current multi-selection, keep all selected;
             // otherwise the ListBox will switch to only this item (handled in PointerMoved fallback).
             var pressedItem = (sender as Control)?.DataContext as ServerFileItem;
-            var currentSelection = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>().ToList() ?? [];
+            var currentSelection = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+                .Where(item => !item.IsFolder && !item.IsUploadFolder).ToList() ?? [];
             _dragCandidates = pressedItem != null && currentSelection.Contains(pressedItem)
                 ? currentSelection.Select(x => x.Name).Where(x => !string.IsNullOrWhiteSpace(x)).ToList()
                 : null; // will fall back to SelectedItems or single item in PointerMoved
@@ -1027,9 +1839,12 @@ public partial class MainWindow : Window
 
         var selected = _dragCandidates
             ?? ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+                .Where(item => !item.IsFolder && !item.IsUploadFolder)
                 .Select(x => x.Name).Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
 
-        if (selected is not { Count: > 0 } && sender is Control ctrl && ctrl.DataContext is ServerFileItem singleItem)
+        if (selected is not { Count: > 0 }
+            && sender is Control ctrl
+            && ctrl.DataContext is ServerFileItem { IsFolder: false, IsUploadFolder: false } singleItem)
         {
             selected = new List<string> { singleItem.Name };
         }
@@ -1128,7 +1943,12 @@ public partial class MainWindow : Window
 
     private void RefreshDragAvailabilityHighlights()
     {
-        foreach (var border in new[] { HubertSlotBorder, RmvpeSlotBorder, VoiceModelsDropZoneBorder, InlinePthDropBorder, InlineIndexDropBorder })
+        foreach (var border in new[]
+                 {
+                     HubertSlotBorder, RmvpeSlotBorder, PymssWeightSlotBorder, PymssConfigSlotBorder,
+                     PretrainedGeneratorSlotBorder, PretrainedDiscriminatorSlotBorder,
+                     VoiceModelsDropZoneBorder, InlinePthDropBorder, InlineIndexDropBorder,
+                 })
         {
             RestoreDragAvailabilityHighlight(border);
         }
@@ -1202,11 +2022,13 @@ public partial class MainWindow : Window
 
     private async void RefreshLogs_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         await _client.SendCommandAsync(new { command = "list_logs" });
     }
 
     private async void ClearOldLogs_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         var confirm = new ConfirmWindow("清空历史日志", "确定删除除当前日志以外的所有历史日志文件吗？此操作不可撤销。");
         var result = await confirm.ShowDialog<bool?>(this);
         if (result == true)
@@ -1273,7 +2095,7 @@ public partial class MainWindow : Window
 
         if (!ValidateBlockTimeConfig())
         {
-            Log("分块时间不能大于手动目标缓冲区延迟。");
+            Log("服务器发送切片不能大于手动目标缓冲区延迟。");
             return;
         }
 
@@ -1284,21 +2106,22 @@ public partial class MainWindow : Window
         if (_isPlaying) UpdateCaptureReadBufferSize();
         _useAdaptiveBuffer = AutoBufferBtn.Classes.Contains("active");
         _jitterEstimator.JitterFactor = JitterFactorSlider.Value;
-        _jitterEstimator.MinBufferMs = MinBufferSlider.Value;
+        _jitterEstimator.MinNetworkProtectionMs = MinBufferSlider.Value;
         _jitterEstimator.MaxBufferMs = JitterMaxBufferSlider.Value;
         _jitterEstimator.Alpha = JitterAlphaSlider.Value;
+        _jitterEstimator.DeviceBufferMs = AudioDeviceBufferMs;
+        int effectiveTargetMs = GetEffectiveTargetBufferMs();
+        RefreshAdaptiveBufferStatus(effectiveTargetMs, force: true);
 
         if (_waveProvider != null)
         {
             if (_waveProvider.BufferedDuration.TotalMilliseconds > _bufferCapacityMs)
             {
-                int targetMs = _useAdaptiveBuffer
-                    ? _jitterEstimator.GetTargetBufferMs(10)
-                    : _targetBufferLatency;
-                TrimPlaybackBufferTo(Math.Min(targetMs, _bufferCapacityMs / 2));
+                TrimPlaybackBufferTo(Math.Min(effectiveTargetMs, _bufferCapacityMs / 2));
             }
             _waveProvider.BufferDuration = TimeSpan.FromMilliseconds(_bufferCapacityMs);
         }
+        ScheduleClientSettingsSave();
     }
 
     private async void RetrySync_OnClick(object? sender, RoutedEventArgs e)
@@ -1324,14 +2147,30 @@ public partial class MainWindow : Window
             return;
         }
 
+        var requiresBaseModels = !string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal)
+            && !string.Equals(id, VoiceModelItem.ServerRawId, StringComparison.Ordinal);
+        if (requiresBaseModels && _client.IsConnected && !EnsureRequiredBaseModelSlotsConfigured())
+        {
+            return;
+        }
+
         bool isSameSelection = string.Equals(_selectedVoiceModelId, id, StringComparison.Ordinal);
         if (isSameSelection
             && !string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal)
             && !string.Equals(id, VoiceModelItem.ServerRawId, StringComparison.Ordinal)
-            && _modelState is ModelState.Loading or ModelState.Ready)
+            && vm.IsActive
+            && (vm.IsLoading || (vm.IsLoaded && _modelState == ModelState.Ready)))
         {
-            Log(_modelState == ModelState.Ready ? "当前模型已就绪，无需重复加载。" : "当前模型正在准备中，请稍候。");
+            Log(vm.IsLoading ? "当前模型正在准备中，请稍候。" : "当前模型已就绪，无需重复加载。");
             return;
+        }
+
+        if (_client.IsConnected
+            && !string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal)
+            && !string.Equals(id, VoiceModelItem.ServerRawId, StringComparison.Ordinal))
+        {
+            SetVoiceModelLoadingState(id, "加载中…");
+            SetModelState(ModelState.Loading);
         }
 
         _prevSelectedVoiceModelId = _selectedVoiceModelId;
@@ -1346,6 +2185,7 @@ public partial class MainWindow : Window
 
         if (string.Equals(id, VoiceModelItem.RawId, StringComparison.Ordinal))
         {
+            _prevSelectedVoiceModelId = null;
             _bypassServerVoice = true;
             _serverPassthroughVoice = false;
             ModelStatusTextBlock.Text = "原声";
@@ -1372,22 +2212,11 @@ public partial class MainWindow : Window
         _serverPassthroughVoice = false;
         _modelPath = vm.Pth;
         _indexPath = vm.Index;
+        _speakerId = vm.SpeakerId;
         ModelStatusTextBlock.Text = vm.Name;
         UpdateStreamingToggleEnabled();
         if (_client.IsConnected)
         {
-            // Show blue "activating" state immediately — voice_models response will set correct final state
-            var targetVmManage = _voiceModelsManagement.FirstOrDefault(v => string.Equals(v.Id, id, StringComparison.Ordinal));
-            if (targetVmManage != null)
-            {
-                _failedVoiceModelIds.Remove(id);
-                    // Only show loading state if model is not already loaded
-                    if (targetVmManage.StatusHint != "已加载到显存，可立即使用")
-                    {
-                        targetVmManage.StatusBrush = new SolidColorBrush(Color.Parse("#2196F3"));
-                        targetVmManage.StatusHint = "激活中…";
-                    }
-            }
             await SendConfigurationAsync(true);
         }
         await _client.SendCommandAsync(new { command = "voice_model_activate", id = vm.Id });
@@ -1417,17 +2246,14 @@ public partial class MainWindow : Window
             Log("实时变声期间不加载新的显存模型，请先停止音频流。");
             return;
         }
+        if (!EnsureRequiredBaseModelSlotsConfigured())
+        {
+            return;
+        }
 
         try
         {
-            // 立即把该模型的状态灯变蓝，表示正在请求加载
-            var targetVm = _voiceModelsManagement.FirstOrDefault(vm => string.Equals(vm.Id, id, StringComparison.Ordinal));
-            if (targetVm != null)
-            {
-                targetVm.StatusBrush = new SolidColorBrush(Color.Parse("#2196F3"));
-                targetVm.StatusHint = "加载中…";
-            }
-            _failedVoiceModelIds.Remove(id);
+            SetVoiceModelLoadingState(id, "加载中…");
             _pendingPreloadModelId = id;
 
             await _client.SendCommandAsync(new { command = "voice_model_preload", id });
@@ -1451,6 +2277,7 @@ public partial class MainWindow : Window
 
     private async void ReadSelectedServerLog_OnClick(object? sender, RoutedEventArgs e)
     {
+        if (!_client.IsConnected) return;
         await ReadSelectedServerLogAsync();
     }
 
@@ -1504,15 +2331,92 @@ public partial class MainWindow : Window
         var editBox = this.FindControl<TextBox>(editName);
         if (editBox == null) return;
 
+        var animationVersion = _sliderEditAnimationVersions.TryGetValue(editBox, out var currentVersion)
+            ? currentVersion + 1
+            : 1;
+        _sliderEditAnimationVersions[editBox] = animationVersion;
+
         editBox.Text = GetSliderRawText(slider);
-        tb.IsVisible = false;
+        tb.IsVisible = true;
+        tb.IsHitTestVisible = false;
+        editBox.IsHitTestVisible = true;
+        editBox.Opacity = 0.0;
+        var scale = new ScaleTransform { ScaleX = 0.96, ScaleY = 0.88 };
+        scale.Transitions = new Transitions
+        {
+            new DoubleTransition
+            {
+                Property = ScaleTransform.ScaleXProperty,
+                Duration = TimeSpan.FromMilliseconds(145),
+                Easing = new CubicEaseOut(),
+            },
+            new DoubleTransition
+            {
+                Property = ScaleTransform.ScaleYProperty,
+                Duration = TimeSpan.FromMilliseconds(145),
+                Easing = new CubicEaseOut(),
+            },
+        };
+        editBox.RenderTransform = scale;
+        editBox.RenderTransformOrigin = new RelativePoint(1.0, 0.5, RelativeUnit.Relative);
         editBox.IsVisible = true;
         editBox.Focus();
         editBox.CaretIndex = editBox.Text?.Length ?? 0;
-            // Show corresponding unit label
-            var unitLabelName = sliderName.Replace("Slider", "UnitLabel");
-            var unitLabel = this.FindControl<TextBlock>(unitLabelName);
-            if (unitLabel != null) unitLabel.IsVisible = true;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!_sliderEditAnimationVersions.TryGetValue(editBox, out var latestVersion)
+                || latestVersion != animationVersion
+                || !editBox.IsVisible)
+            {
+                return;
+            }
+
+            tb.Opacity = 0.0;
+            editBox.Opacity = 1.0;
+            scale.ScaleX = 1.0;
+            scale.ScaleY = 1.0;
+        }, DispatcherPriority.Loaded);
+    }
+
+    private void AnimateSliderEditClosed(TextBox editBox, TextBlock? textBlock)
+    {
+        var animationVersion = _sliderEditAnimationVersions.TryGetValue(editBox, out var currentVersion)
+            ? currentVersion + 1
+            : 1;
+        _sliderEditAnimationVersions[editBox] = animationVersion;
+
+        editBox.IsHitTestVisible = false;
+        editBox.Opacity = 0.0;
+        if (editBox.RenderTransform is ScaleTransform scale)
+        {
+            scale.ScaleX = 0.96;
+            scale.ScaleY = 0.88;
+        }
+
+        if (textBlock != null)
+        {
+            textBlock.IsVisible = true;
+            textBlock.IsHitTestVisible = false;
+            textBlock.Opacity = 1.0;
+        }
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (!_sliderEditAnimationVersions.TryGetValue(editBox, out var latestVersion)
+                || latestVersion != animationVersion)
+            {
+                return;
+            }
+
+            editBox.IsVisible = false;
+            editBox.IsHitTestVisible = false;
+            if (textBlock != null)
+            {
+                textBlock.IsHitTestVisible = true;
+            }
+            _sliderEditAnimationVersions.Remove(editBox);
+        }, TimeSpan.FromMilliseconds(130));
     }
 
     private void CommitSliderEdit(TextBox tb)
@@ -1530,12 +2434,7 @@ public partial class MainWindow : Window
             slider.Value = value;  // triggers the existing OnValueChanged which updates the display text
         }
 
-        tb.IsVisible = false;
-        if (textBlock != null) textBlock.IsVisible = true;
-            // Hide corresponding unit label
-            var unitLabelName = sliderName.Replace("Slider", "UnitLabel");
-            var unitLabel = this.FindControl<TextBlock>(unitLabelName);
-            if (unitLabel != null) unitLabel.IsVisible = false;
+        AnimateSliderEditClosed(tb, textBlock);
     }
 
     private void CancelSliderEdit(TextBox tb)
@@ -1543,12 +2442,7 @@ public partial class MainWindow : Window
         if (tb.Tag is not string sliderName) return;
         var textBlockName = sliderName.Replace("Slider", "ValueText");
         var textBlock = this.FindControl<TextBlock>(textBlockName);
-        tb.IsVisible = false;
-        if (textBlock != null) textBlock.IsVisible = true;
-            // Hide corresponding unit label
-            var unitLabelName = sliderName.Replace("Slider", "UnitLabel");
-            var unitLabel = this.FindControl<TextBlock>(unitLabelName);
-            if (unitLabel != null) unitLabel.IsVisible = false;
+        AnimateSliderEditClosed(tb, textBlock);
     }
 
     private void SliderValueEdit_KeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
@@ -1568,7 +2462,7 @@ public partial class MainWindow : Window
 
     private void SliderValueEdit_LostFocus(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        if (sender is TextBox tb)
+        if (sender is TextBox { IsVisible: true, IsHitTestVisible: true } tb)
             CommitSliderEdit(tb);
     }
 
@@ -1577,7 +2471,7 @@ public partial class MainWindow : Window
         var activeEdit = this
             .GetVisualDescendants()
             .OfType<TextBox>()
-            .FirstOrDefault(tb => tb.IsVisible && tb.Classes.Contains("slider-value-edit"));
+            .FirstOrDefault(tb => tb.IsVisible && tb.IsHitTestVisible && tb.Classes.Contains("slider-value-edit"));
 
         if (activeEdit == null)
         {
@@ -1616,7 +2510,7 @@ public partial class MainWindow : Window
 
     private void BlockTimeSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        BlockTimeValueText?.Text = $"{e.NewValue:F0} ms";
+        BlockTimeValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         UpdateBlockTimeValidationUi();
         _blockTime = (float)e.NewValue / 1000f;
@@ -1626,7 +2520,7 @@ public partial class MainWindow : Window
 
     private void CrossfadeSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        CrossfadeValueText?.Text = $"{e.NewValue:F0} ms";
+        CrossfadeValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         _crossfadeLength = (float)e.NewValue / 1000f;
         ScheduleRealtimeConfigSend();
@@ -1634,7 +2528,7 @@ public partial class MainWindow : Window
 
     private void ExtraTimeSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        ExtraTimeValueText?.Text = $"{e.NewValue:F0} ms";
+        ExtraTimeValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         _extraTime = (float)e.NewValue / 1000f;
         ScheduleRealtimeConfigSend();
@@ -1642,7 +2536,7 @@ public partial class MainWindow : Window
 
     private void ServerStreamChunkSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        ServerStreamChunkValueText?.Text = $"{e.NewValue:F0} ms";
+        ServerStreamChunkValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         _serverStreamChunkMs = (int)Math.Round(e.NewValue);
         ScheduleRealtimeConfigSend();
@@ -1650,7 +2544,7 @@ public partial class MainWindow : Window
 
     private void SilenceDbSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        SilenceDbValueText?.Text = $"{e.NewValue:F0} dB";
+        SilenceDbValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         _silenceDbThreshold = (float)e.NewValue;
         ScheduleRealtimeConfigSend();
@@ -1745,21 +2639,21 @@ public partial class MainWindow : Window
 
     private void JitterMaxBufferSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        JitterMaxBufferValueText?.Text = $"{e.NewValue:F0} ms";
+        JitterMaxBufferValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         ApplyLocalSettings();
     }
 
     private void MinBufferSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        MinBufferValueText?.Text = $"{e.NewValue:F0} ms";
+        MinBufferValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         ApplyLocalSettings();
     }
 
     private void TargetBufferSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        TargetBufferValueText?.Text = $"{e.NewValue:F0} ms";
+        TargetBufferValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         UpdateBlockTimeValidationUi();
         ApplyLocalSettings();
@@ -1767,28 +2661,28 @@ public partial class MainWindow : Window
 
     private void MaxBufferSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        MaxBufferValueText?.Text = $"{e.NewValue:F0} ms";
+        MaxBufferValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         ApplyLocalSettings();
     }
 
     private void BufferCapacitySlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        BufferCapacityValueText?.Text = $"{e.NewValue:F0} ms";
+        BufferCapacityValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         ApplyLocalSettings();
     }
 
     private void NetworkSliceSlider_OnValueChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        NetworkSliceValueText?.Text = $"{e.NewValue:F0} ms";
+        NetworkSliceValueText?.Text = $"{e.NewValue:F0}";
         if (!_uiInitialized) return;
         ApplyLocalSettings();
     }
 
     private bool ValidateBlockTimeConfig()
     {
-        if (AutoBufferBtn == null || BlockTimeSlider == null || TargetBufferSlider == null)
+        if (AutoBufferBtn == null || ServerStreamChunkSlider == null || TargetBufferSlider == null)
         {
             // During XAML initialization some controls may not be ready yet.
             return true;
@@ -1799,7 +2693,7 @@ public partial class MainWindow : Window
             return true;
         }
 
-        return BlockTimeSlider.Value <= TargetBufferSlider.Value;
+        return ServerStreamChunkSlider.Value <= TargetBufferSlider.Value;
     }
 
     private void UpdateBlockTimeValidationUi()
@@ -1814,6 +2708,9 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _trainingPollTimer?.Stop();
+        _settingsSaveTimer?.Stop();
+        SaveClientSettingsNow();
         _client.LogReceived -= Client_OnLogReceived;
         _client.ConnectionStateChanged -= Client_OnConnectionStateChanged;
         _client.TextMessageReceived -= Client_OnTextMessageReceived;
@@ -1835,12 +2732,271 @@ public partial class MainWindow : Window
 
     private void Client_OnTextMessageReceived(object? sender, string json)
     {
-        Dispatcher.UIThread.Post(() => HandleTextMessage(json));
+        var generation = _client.ConnectionGeneration;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_client.IsConnected && generation == _client.ConnectionGeneration)
+            {
+                HandleTextMessage(json);
+            }
+        });
     }
 
     private void Client_OnBinaryMessageReceived(object? sender, byte[] payload)
     {
         HandleBinaryMessage(payload);
+    }
+
+    private async void TrainingStart_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (!_client.IsConnected)
+        {
+            TrainingStatusText.Text = "请先连接服务器";
+            return;
+        }
+        if (_isPlaying)
+        {
+            StopStreaming();
+            Log("开始训练前已停止实时变声，避免训练与推理争用显卡。");
+        }
+
+        var name = (TrainingNameBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            TrainingStatusText.Text = "请填写模型名称";
+            return;
+        }
+        var selectedFiles = _trainingAudioFiles.Where(item => item.IsSelected).ToList();
+        if (selectedFiles.Count == 0)
+        {
+            TrainingStatusText.Text = "请至少勾选一个训练音频";
+            return;
+        }
+        if (selectedFiles.Any(item => string.IsNullOrWhiteSpace(item.Speaker)))
+        {
+            TrainingStatusText.Text = "每个训练音频都必须填写说话人";
+            return;
+        }
+        if (!int.TryParse(TrainingEpochsBox.Text, out var epochs) || epochs < 1
+            || !int.TryParse(TrainingBatchSizeBox.Text, out var batchSize) || batchSize < 1)
+        {
+            TrainingStatusText.Text = "训练轮数和批大小必须是正整数";
+            return;
+        }
+        var sampleRateText = (TrainingSampleRateBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "40000";
+        if (!int.TryParse(sampleRateText, out var sampleRate)) sampleRate = 40000;
+        var preprocess = (TrainingPreprocessBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "none";
+        if (!string.Equals(preprocess, "none", StringComparison.OrdinalIgnoreCase)
+            && (!_pymssWeightSlotItems.Any(item => item.IsActive)
+                || !_pymssConfigSlotItems.Any(item => item.IsActive)))
+        {
+            TrainingStatusText.Text = "请先在“模型与文件”中激活 PyMSS 模型及其配置";
+            return;
+        }
+        var usePretrained = TrainingUsePretrainedCheckBox.IsChecked == true;
+        if (usePretrained
+            && (!_pretrainedGeneratorSlotItems.Any(item => item.IsActive)
+                || !_pretrainedDiscriminatorSlotItems.Any(item => item.IsActive)))
+        {
+            TrainingStatusText.Text = "请先在“模型与文件”中激活预训练生成器和判别器";
+            return;
+        }
+
+        TrainingStartButton.IsEnabled = false;
+        _trainingNameAutoManaged = false;
+        TrainingStatusText.Text = "正在创建训练任务…";
+        await _client.SendCommandAsync(new
+        {
+            command = "training_start",
+            training = new
+            {
+                name,
+                files = selectedFiles.Select(item => new { name = item.Name, speaker = item.Speaker.Trim() }).ToArray(),
+                epochs,
+                batch_size = batchSize,
+                sample_rate = sampleRate,
+                preprocess,
+                use_pretrained = usePretrained,
+            },
+        });
+    }
+
+    private void TrainingSelectAll_OnClick(object? sender, RoutedEventArgs e)
+    {
+        foreach (var item in _trainingAudioFiles) item.IsSelected = true;
+    }
+
+    private void TrainingClear_OnClick(object? sender, RoutedEventArgs e)
+    {
+        foreach (var item in _trainingAudioFiles)
+        {
+            _hiddenTrainingAudioFiles.Add(item.Name);
+        }
+        _trainingAudioFiles.Clear();
+        _trainingSpeakerGroups.Clear();
+        UpdateTrainingAudioActionButtons();
+        TrainingStatusText.Text = "已清空当前训练音频，服务器文件未删除";
+    }
+
+    private async void TrainingOrganizeFiles_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (!_client.IsConnected || _trainingOrganizePending) return;
+        var modelName = (TrainingNameBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(modelName))
+        {
+            TrainingStatusText.Text = "请先填写模型名称";
+            TrainingNameBox.Focus();
+            return;
+        }
+        if (_trainingAudioFiles.Count == 0)
+        {
+            TrainingStatusText.Text = "没有可整理的训练音频";
+            return;
+        }
+        if (_trainingAudioFiles.Any(item => string.IsNullOrWhiteSpace(item.Speaker)))
+        {
+            TrainingStatusText.Text = "每个训练音频都必须填写说话人";
+            return;
+        }
+
+        _trainingNameAutoManaged = false;
+        _trainingOrganizePending = true;
+        UpdateTrainingAudioActionButtons();
+        TrainingStatusText.Text = "正在整理训练音频…";
+        await _client.SendCommandAsync(new
+        {
+            command = "training_organize_files",
+            model_name = modelName,
+            files = _trainingAudioFiles.Select(item => new
+            {
+                name = item.Name,
+                speaker = item.Speaker.Trim(),
+            }).ToArray(),
+        });
+    }
+
+    private void TrainingAudioItem_OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(sender as Visual).Properties.IsLeftButtonPressed
+            && (sender as Control)?.DataContext is TrainingAudioItem item)
+        {
+            if ((e.KeyModifiers & KeyModifiers.Control) != 0)
+            {
+                item.IsSelected = !item.IsSelected;
+            }
+            else
+            {
+                foreach (var audioFile in _trainingAudioFiles)
+                {
+                    audioFile.IsSelected = ReferenceEquals(audioFile, item);
+                }
+            }
+            e.Handled = true;
+        }
+    }
+
+    private void TrainingSpeakerGroupHeader_OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(sender as Visual).Properties.IsLeftButtonPressed
+            || (sender as Control)?.DataContext is not TrainingSpeakerGroup group)
+        {
+            return;
+        }
+
+        if (e.Source is Visual source
+            && (source is TextBox || source.GetVisualAncestors().OfType<TextBox>().Any()))
+        {
+            return;
+        }
+
+        group.IsExpanded = !group.IsExpanded;
+        e.Handled = true;
+    }
+
+    private async void TrainingRefresh_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_client.IsConnected)
+        {
+            _hiddenTrainingAudioFiles.Clear();
+            await _client.SendCommandAsync(new { command = "files_list" });
+            await _client.SendCommandAsync(new { command = "training_list" });
+        }
+    }
+
+    private void TrainingNameBox_OnTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (!_settingTrainingName)
+        {
+            _trainingNameAutoManaged = false;
+        }
+    }
+
+    private async void TrainingCancel_OnClick(object? sender, RoutedEventArgs e)
+    {
+        if (_client.IsConnected && TrainingJobsListBox.SelectedItem is TrainingJobItem job && job.CanCancel)
+        {
+            TrainingCancelButton.IsEnabled = false;
+            TrainingStatusText.Text = "正在取消训练…";
+            await _client.SendCommandAsync(new { command = "training_cancel", id = job.Id });
+        }
+    }
+
+    private void TrainingJobs_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        UpdateSelectedTrainingJob();
+    }
+
+    private void UpdateSelectedTrainingJob()
+    {
+        if (TrainingJobsListBox.SelectedItem is not TrainingJobItem job)
+        {
+            TrainingProgressBar.Value = 0;
+            TrainingStatusText.Text = "等待任务";
+            TrainingCancelButton.IsEnabled = false;
+            return;
+        }
+        TrainingProgressBar.Value = Math.Clamp(job.Progress * 100.0, 0.0, 100.0);
+        TrainingStatusText.Text = job.Message;
+        TrainingCancelButton.IsEnabled = _client.IsConnected && job.CanCancel;
+    }
+
+    private void ApplyTrainingJobs(JsonElement trainingElement)
+    {
+        var selectedId = (TrainingJobsListBox.SelectedItem as TrainingJobItem)?.Id;
+        var activeId = trainingElement.TryGetProperty("active_id", out var activeElement)
+            ? activeElement.GetString() ?? string.Empty
+            : string.Empty;
+        var jobs = new List<TrainingJobItem>();
+        if (trainingElement.TryGetProperty("jobs", out var jobsElement)
+            && jobsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in jobsElement.EnumerateArray())
+            {
+                jobs.Add(new TrainingJobItem
+                {
+                    Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty,
+                    Name = item.TryGetProperty("name", out var name) ? name.GetString() ?? string.Empty : string.Empty,
+                    State = item.TryGetProperty("state", out var state) ? state.GetString() ?? string.Empty : string.Empty,
+                    Stage = item.TryGetProperty("stage", out var stage) ? stage.GetString() ?? string.Empty : string.Empty,
+                    Message = item.TryGetProperty("message", out var message) ? message.GetString() ?? string.Empty : string.Empty,
+                    Progress = item.TryGetProperty("progress", out var progress) && progress.TryGetDouble(out var progressValue) ? progressValue : 0.0,
+                    Epoch = item.TryGetProperty("epoch", out var epoch) && epoch.TryGetInt32(out var epochValue) ? epochValue : 0,
+                    Loss = item.TryGetProperty("loss", out var loss) && loss.TryGetDouble(out var lossValue) ? lossValue : 0.0,
+                    ModelFile = item.TryGetProperty("model_file", out var model) ? model.GetString() ?? string.Empty : string.Empty,
+                    IndexFile = item.TryGetProperty("index_file", out var index) ? index.GetString() ?? string.Empty : string.Empty,
+                });
+            }
+        }
+        _trainingJobs.Clear();
+        foreach (var job in jobs) _trainingJobs.Add(job);
+        TrainingHistoryExpander.IsVisible = _trainingJobs.Count > 0;
+        var target = _trainingJobs.FirstOrDefault(job => string.Equals(job.Id, selectedId, StringComparison.Ordinal))
+            ?? _trainingJobs.FirstOrDefault(job => string.Equals(job.Id, activeId, StringComparison.Ordinal))
+            ?? _trainingJobs.FirstOrDefault();
+        TrainingJobsListBox.SelectedItem = target;
+        TrainingStartButton.IsEnabled = _client.IsConnected && string.IsNullOrEmpty(activeId);
+        UpdateSelectedTrainingJob();
+        UpdateSuggestedTrainingName();
     }
 
     private async Task RequestInitialDataAsync()
@@ -1849,6 +3005,7 @@ public partial class MainWindow : Window
         await _client.SendCommandAsync(new { command = "files_list" });
         await _client.SendCommandAsync(new { command = "model_list_slots" });
         await _client.SendCommandAsync(new { command = "voice_model_list" });
+        await _client.SendCommandAsync(new { command = "training_list" });
         await _client.SendCommandAsync(new { command = "list_logs" });
     }
 
@@ -1935,14 +3092,44 @@ public partial class MainWindow : Window
 
     private void UpdateConnectionUi(bool isConnected)
     {
-        ServerUriTextBox.IsEnabled = !isConnected;
+        UpdateConnectionActionAvailability();
+        ServerFilesRefreshButton.IsEnabled = isConnected;
+        ServerFilesUploadButton.IsEnabled = isConnected;
+        ServerFolderUploadButton.IsEnabled = isConnected;
+        HubDownloadButton.IsEnabled = isConnected;
+        TrainingUploadAudioButton.IsEnabled = isConnected;
+        TrainingUploadFolderButton.IsEnabled = isConnected;
+        TrainingRefreshButton.IsEnabled = isConnected;
+        UpdateTrainingAudioActionButtons();
+        AddVoiceModelButton.IsEnabled = isConnected && !InlineAddVoiceModelCard.IsVisible;
+        InlineConfirmVoiceModelButton.IsEnabled = isConnected;
+        ServerLogsRefreshButton.IsEnabled = isConnected;
+        ServerLogsClearButton.IsEnabled = isConnected;
+        ServerLogReadButton.IsEnabled = isConnected;
+        ServerLogFilesComboBox.IsEnabled = isConnected && SyncCurrentLogCheckBox.IsChecked != true;
+        SyncCurrentLogCheckBox.IsEnabled = isConnected;
+        RetrySyncButton.IsEnabled = isConnected;
+        var selectedFileCount = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+            .Count(item => !item.IsFolder && !item.IsUploadFolder) ?? 0;
+        DeleteFileButton.IsEnabled = isConnected && selectedFileCount > 0;
+        RenameFileButton.IsEnabled = isConnected && selectedFileCount == 1;
+        TrainingStartButton.IsEnabled = isConnected && !_trainingJobs.Any(job => job.CanCancel);
+        TrainingCancelButton.IsEnabled = isConnected
+            && TrainingJobsListBox.SelectedItem is TrainingJobItem selectedTraining
+            && selectedTraining.CanCancel;
         SetAnimatedVisibility(ConnectionGatePanel, !isConnected);
         DisconnectButton.Opacity = isConnected ? 1.0 : 0.0;
         DisconnectButton.IsEnabled = isConnected;
         DisconnectButton.IsHitTestVisible = isConnected;
-        GlobalStatusTextBlock.Text = isConnected ? "已连接" : "未连接";
+        ConnectionStatusDot.Opacity = isConnected ? 1.0 : 0.35;
+        GlobalStatusTextBlock.Text = isConnected
+            ? (_client.IsLocalConnection ? "本地直连" : "已连接")
+            : "未连接";
         if (!isConnected)
         {
+            _serverConfigurationAccepted = false;
+            _trainingOrganizePending = false;
+            UpdateTrainingAudioActionButtons();
             if (_isPlaying && !_bypassServerVoice)
             {
                 StopStreaming();
@@ -1955,15 +3142,23 @@ public partial class MainWindow : Window
             _uploadDoneTcs?.TrySetCanceled();
             _uploadReadyTcs = null;
             _uploadDoneTcs = null;
+            _hubRepositoryTcs?.TrySetCanceled();
+            _hubRepositoryTcs = null;
+            foreach (var operation in _hubDownloadOperations.Values)
+            {
+                operation.Completion.TrySetCanceled();
+            }
+            _hubDownloadOperations.Clear();
             _uploadOffsetCorrections.Clear();
             _effectiveServerBlockMs = 0;
+            _effectiveServerChunkMs = 0;
             Interlocked.Exchange(ref _pendingLatencyReset, 0);
+            ResetVoiceModelsForDisconnectedState();
             SetModelState(ModelState.NotReady);
         }
         else if (_modelState == ModelState.NotReady)
         {
             ModelStatusTextBlock.Text = _bypassServerVoice ? "原声" : "等待模型";
-            MainTabControl.SelectedIndex = 0;
         }
         UpdateStreamingToggleEnabled();
     }
@@ -2005,11 +3200,74 @@ public partial class MainWindow : Window
 
                 var errorMessage = root.TryGetProperty("message", out var errorElement) ? errorElement.GetString() ?? "未知错误" : "未知错误";
 
+                if (string.Equals(type, "upload_error", StringComparison.OrdinalIgnoreCase))
+                {
+                    var exception = new InvalidOperationException(errorMessage);
+                    _uploadReadyTcs?.TrySetException(exception);
+                    _uploadDoneTcs?.TrySetException(exception);
+                    if (root.TryGetProperty("upload_id", out var failedUploadIdElement))
+                    {
+                        var failedUploadId = failedUploadIdElement.GetString() ?? string.Empty;
+                        if (_uploadItemsById.TryRemove(failedUploadId, out var failedUploadItem))
+                        {
+                            failedUploadItem.IsUploading = false;
+                            failedUploadItem.UploadFailed = true;
+                            failedUploadItem.Status = "上传失败";
+                        }
+                    }
+                    return;
+                }
+
+                if (string.Equals(type, "hub_repo_error", StringComparison.OrdinalIgnoreCase))
+                {
+                    _hubRepositoryTcs?.TrySetException(new InvalidOperationException(errorMessage));
+                    return;
+                }
+
+                if (string.Equals(type, "hub_download_error", StringComparison.OrdinalIgnoreCase))
+                {
+                    var requestId = root.TryGetProperty("request_id", out var requestElement)
+                        ? requestElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (_hubDownloadOperations.TryGetValue(requestId, out var operation))
+                    {
+                        operation.Completion.TrySetException(new InvalidOperationException(errorMessage));
+                    }
+                    return;
+                }
+
+                if (string.Equals(type, "training_error", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrainingStatusText.Text = errorMessage;
+                    TrainingStartButton.IsEnabled = _client.IsConnected;
+                    Log($"[训练错误] {errorMessage}");
+                    return;
+                }
+
+                if (string.Equals(type, "training_organize_error", StringComparison.OrdinalIgnoreCase))
+                {
+                    _trainingOrganizePending = false;
+                    UpdateTrainingAudioActionButtons();
+                    TrainingStatusText.Text = errorMessage;
+                    Log($"[整理文件失败] {errorMessage}");
+                    ShowErrorToast("整理训练音频失败");
+                    return;
+                }
+
+                if (string.Equals(type, "config_required", StringComparison.OrdinalIgnoreCase))
+                {
+                    _serverConfigurationAccepted = false;
+                    UpdateStreamingToggleEnabled();
+                    Log($"[配置] {errorMessage}");
+                    ShowErrorToast(errorMessage);
+                    return;
+                }
+
                 // 语音模型加载失败：把蓝灯变红灯
                 if (string.Equals(type, "voice_model_error", StringComparison.OrdinalIgnoreCase))
                 {
                     Log($"[错误] 模型加载失败: {errorMessage}");
-                    ShowErrorToast("模型加载失败");
+                    ShowErrorToast(GetModelLoadErrorToastText(errorMessage));
                     MarkCurrentTargetModelError();
                     RevertModelSelectionOnError();
                     if (!string.IsNullOrEmpty(_pendingPreloadModelId))
@@ -2018,6 +3276,8 @@ public partial class MainWindow : Window
                         var failedVm = _voiceModelsManagement.FirstOrDefault(vm => string.Equals(vm.Id, _pendingPreloadModelId, StringComparison.Ordinal));
                         if (failedVm != null)
                         {
+                            failedVm.IsLoading = false;
+                            failedVm.IsLoaded = false;
                             failedVm.StatusBrush = new SolidColorBrush(Color.Parse("#F44336"));
                             failedVm.StatusHint = $"加载失败: {errorMessage}";
                         }
@@ -2031,7 +3291,7 @@ public partial class MainWindow : Window
                 {
                     SetModelState(ModelState.Error, errorMessage);
                     MarkCurrentTargetModelError();
-                    ShowErrorToast("模型加载失败");
+                    ShowErrorToast(GetModelLoadErrorToastText(errorMessage));
                     RevertModelSelectionOnError();
                     return;
                 }
@@ -2057,6 +3317,8 @@ public partial class MainWindow : Window
                         break;
                     }
 
+                    _serverConfigurationAccepted = true;
+
                     if (root.TryGetProperty("effective", out var effectiveElement)
                         && effectiveElement.TryGetProperty("block_ms", out var blockMsElement)
                         && blockMsElement.TryGetInt32(out var acknowledgedBlockMs))
@@ -2072,8 +3334,35 @@ public partial class MainWindow : Window
                             Log($"服务端分块已切换为 {acknowledgedBlockMs}ms，正在重新校准自动缓冲。");
                         }
                     }
+
+                    if (root.TryGetProperty("effective", out var chunkEffectiveElement)
+                        && chunkEffectiveElement.TryGetProperty("stream_chunk_ms", out var chunkMsElement)
+                        && chunkMsElement.TryGetInt32(out var acknowledgedChunkMs))
+                    {
+                        bool chunkChanged = _effectiveServerChunkMs > 0
+                            && acknowledgedChunkMs != _effectiveServerChunkMs;
+                        _effectiveServerChunkMs = acknowledgedChunkMs;
+                        if (chunkChanged && _isPlaying)
+                        {
+                            Interlocked.Exchange(ref _pendingLatencyReset, 1);
+                            Log($"服务端发送切片已切换为 {acknowledgedChunkMs}ms，正在重新校准自动缓冲。");
+                        }
+                    }
                     SetModelState(ModelState.Ready);
                     SetActiveModelLoadingState(isLoading: false);
+                    var selectedVoiceModel = _voiceModelsManagement.FirstOrDefault(
+                        vm => string.Equals(vm.Id, _selectedVoiceModelId, StringComparison.Ordinal));
+                    if (selectedVoiceModel != null)
+                    {
+                        selectedVoiceModel.IsLoading = false;
+                        selectedVoiceModel.IsLoaded = true;
+                        selectedVoiceModel.StatusBrush = new SolidColorBrush(Color.Parse("#2E9F4D"));
+                        selectedVoiceModel.StatusHint = "已加载到显存，可立即使用";
+                        if (selectedVoiceModel.IsActive)
+                        {
+                            _prevSelectedVoiceModelId = null;
+                        }
+                    }
                     if (root.TryGetProperty("hash", out var hashElement))
                     {
                         var serverHash = hashElement.GetString() ?? string.Empty;
@@ -2096,11 +3385,14 @@ public partial class MainWindow : Window
                     break;
                 }
                 case "config_error":
-                    SetModelState(ModelState.Error, root.TryGetProperty("message", out var configErrorMessage) ? configErrorMessage.GetString() ?? "模型加载失败" : "模型加载失败");
+                {
+                    var configErrorText = root.TryGetProperty("message", out var configErrorMessage) ? configErrorMessage.GetString() ?? "模型加载失败" : "模型加载失败";
+                    SetModelState(ModelState.Error, configErrorText);
                     MarkCurrentTargetModelError();
-                    ShowErrorToast("模型加载失败");
+                    ShowErrorToast(GetModelLoadErrorToastText(configErrorText));
                     RevertModelSelectionOnError();
                     break;
+                }
                 case "log_list":
                     UpdateServerLogList(
                         root.GetProperty("files").EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToList(),
@@ -2117,15 +3409,113 @@ public partial class MainWindow : Window
                 case "files_list":
                     ApplyServerFiles(root.GetProperty("files"));
                     break;
+                case "hub_repo_files":
+                {
+                    var files = root.GetProperty("files").EnumerateArray()
+                        .Select(item => new HubRepositoryFile(
+                            item.TryGetProperty("path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
+                            item.TryGetProperty("size", out var sizeElement) && sizeElement.TryGetInt64(out var size) ? size : 0,
+                            item.TryGetProperty("oid", out var oidElement) ? oidElement.GetString() ?? string.Empty : string.Empty))
+                        .Where(item => !string.IsNullOrWhiteSpace(item.Path))
+                        .ToList();
+                    _hubRepositoryTcs?.TrySetResult(new HubRepositorySnapshot(
+                        root.TryGetProperty("provider", out var providerElement) ? providerElement.GetString() ?? string.Empty : string.Empty,
+                        root.TryGetProperty("repo", out var repoElement) ? repoElement.GetString() ?? string.Empty : string.Empty,
+                        root.TryGetProperty("revision", out var revisionElement) ? revisionElement.GetString() ?? string.Empty : string.Empty,
+                        root.TryGetProperty("default_destination", out var destinationElement) ? destinationElement.GetString() ?? string.Empty : string.Empty,
+                        root.TryGetProperty("total_bytes", out var totalElement) && totalElement.TryGetInt64(out var total) ? total : 0,
+                        files));
+                    break;
+                }
+                case "hub_download_started":
+                    break;
+                case "hub_download_progress":
+                {
+                    var requestId = root.TryGetProperty("request_id", out var requestElement)
+                        ? requestElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (_hubDownloadOperations.TryGetValue(requestId, out var operation))
+                    {
+                        operation.Progress.Report(new HubDownloadProgress(
+                            root.TryGetProperty("path", out var pathElement) ? pathElement.GetString() ?? string.Empty : string.Empty,
+                            root.TryGetProperty("file_index", out var indexElement) && indexElement.TryGetInt32(out var index) ? index : 0,
+                            root.TryGetProperty("file_count", out var countElement) && countElement.TryGetInt32(out var count) ? count : 0,
+                            root.TryGetProperty("completed_bytes", out var completedElement) && completedElement.TryGetInt64(out var completed) ? completed : 0,
+                            root.TryGetProperty("total_bytes", out var totalElement) && totalElement.TryGetInt64(out var total) ? total : 0,
+                            root.TryGetProperty("state", out var stateElement) ? stateElement.GetString() ?? string.Empty : string.Empty));
+                    }
+                    break;
+                }
+                case "hub_download_done":
+                {
+                    var requestId = root.TryGetProperty("request_id", out var requestElement)
+                        ? requestElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    var files = root.TryGetProperty("files", out var filesElement)
+                        ? filesElement.EnumerateArray().Select(item => item.GetString() ?? string.Empty).Where(item => item.Length > 0).ToList()
+                        : new List<string>();
+                    if (_hubDownloadOperations.TryGetValue(requestId, out var operation))
+                    {
+                        operation.Completion.TrySetResult(new HubDownloadResult(
+                            root.TryGetProperty("destination", out var destinationElement) ? destinationElement.GetString() ?? string.Empty : string.Empty,
+                            files,
+                            root.TryGetProperty("total_bytes", out var totalElement) && totalElement.TryGetInt64(out var total) ? total : 0));
+                    }
+                    Log($"模型仓库下载完成：{files.Count} 个文件");
+                    _ = _client.SendCommandAsync(new { command = "files_list" });
+                    break;
+                }
+                case "hub_download_cancelled":
+                {
+                    var requestId = root.TryGetProperty("request_id", out var requestElement)
+                        ? requestElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (_hubDownloadOperations.TryGetValue(requestId, out var operation))
+                    {
+                        operation.Completion.TrySetCanceled();
+                    }
+                    break;
+                }
                 case "voice_models":
-                    _pendingPreloadModelId = null;
                     ApplyVoiceModelsFromServer(root.GetProperty("voice"));
                     break;
+                case "training_jobs":
+                    ApplyTrainingJobs(root.GetProperty("training"));
+                    break;
+                case "training_started":
+                    TrainingStatusText.Text = "训练任务已启动";
+                    _ = _client.SendCommandAsync(new { command = "training_list" });
+                    break;
+                case "training_cancelled":
+                    TrainingStatusText.Text = "训练正在取消";
+                    _ = _client.SendCommandAsync(new { command = "training_list" });
+                    break;
+                case "training_files_organized":
+                {
+                    _trainingOrganizePending = false;
+                    _trainingNameAutoManaged = false;
+                    var organizedModel = root.TryGetProperty("model", out var organizedModelElement)
+                        ? organizedModelElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (!string.IsNullOrWhiteSpace(organizedModel))
+                    {
+                        SetTrainingName(organizedModel);
+                    }
+                    var organizedCount = root.TryGetProperty("files", out var organizedFilesElement)
+                        && organizedFilesElement.ValueKind == JsonValueKind.Array
+                        ? organizedFilesElement.GetArrayLength()
+                        : 0;
+                    TrainingStatusText.Text = $"已整理 {organizedCount} 个训练音频";
+                    Log($"训练音频已整理到 {organizedModel}/dataset");
+                    UpdateTrainingAudioActionButtons();
+                    _ = _client.SendCommandAsync(new { command = "files_list" });
+                    break;
+                }
                 case "voice_model_error":
                 {
                     var errMsg = root.TryGetProperty("message", out var vmErrMsg) ? vmErrMsg.GetString() ?? "模型加载失败" : "模型加载失败";
                     Log($"[错误] 模型加载失败: {errMsg}");
-                    ShowErrorToast("模型加载失败");
+                    ShowErrorToast(GetModelLoadErrorToastText(errMsg));
                     MarkCurrentTargetModelError();
                     RevertModelSelectionOnError();
                     if (!string.IsNullOrEmpty(_pendingPreloadModelId))
@@ -2133,6 +3523,8 @@ public partial class MainWindow : Window
                         var failedVm = _voiceModelsManagement.FirstOrDefault(vm => string.Equals(vm.Id, _pendingPreloadModelId, StringComparison.Ordinal));
                         if (failedVm != null)
                         {
+                            failedVm.IsLoading = false;
+                            failedVm.IsLoaded = false;
                             failedVm.StatusBrush = new SolidColorBrush(Color.Parse("#F44336"));
                             failedVm.StatusHint = $"加载失败: {errMsg}";
                         }
@@ -2174,7 +3566,10 @@ public partial class MainWindow : Window
                     var uploadId = root.GetProperty("upload_id").GetString() ?? string.Empty;
                     if (_uploadItemsById.TryGetValue(uploadId, out var uploadItem))
                     {
-                        uploadItem.Name = root.GetProperty("name").GetString() ?? uploadItem.Name;
+                        if (uploadItem.UploadParent is null)
+                        {
+                            uploadItem.Name = root.GetProperty("name").GetString() ?? uploadItem.Name;
+                        }
                         uploadItem.TotalBytes = root.GetProperty("total_bytes").GetInt64();
                         uploadItem.SentBytes = root.GetProperty("received_bytes").GetInt64();
                         uploadItem.IsUploading = true;
@@ -2251,12 +3646,158 @@ public partial class MainWindow : Window
         }
 
         RefreshServerFilesView();
+        SyncTrainingAudioFiles();
+        UpdateSuggestedTrainingName();
         Log($"已获取服务端文件列表，共 {_serverFilesRaw.Count} 项。");
+    }
+
+    private void SyncTrainingAudioFiles()
+    {
+        var previous = _trainingAudioFiles.ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+        var previousExpansion = _trainingSpeakerGroups.ToDictionary(
+            group => group.Name,
+            group => group.IsExpanded,
+            StringComparer.OrdinalIgnoreCase);
+        var updated = _serverFilesRaw
+            .Where(item => IsTrainingAudioFile(item.Name))
+            .Where(item => !_hiddenTrainingAudioFiles.Contains(item.Name))
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(item =>
+            {
+                if (previous.TryGetValue(item.Name, out var existing))
+                {
+                    existing.DetailText = BuildTrainingAudioDetail(item);
+                    return existing;
+                }
+
+                var placement = InferTrainingPlacement(item.Name);
+                return new TrainingAudioItem
+                {
+                    Name = item.Name,
+                    DisplayName = placement.DisplayName,
+                    DetailText = BuildTrainingAudioDetail(item),
+                    Speaker = placement.Speaker,
+                    IsSelected = false,
+                };
+            })
+            .ToList();
+
+        _trainingAudioFiles.Clear();
+        foreach (var item in updated) _trainingAudioFiles.Add(item);
+
+        _trainingSpeakerGroups.Clear();
+        var groupIndex = 0;
+        foreach (var speakerFiles in updated.GroupBy(item => item.Speaker, StringComparer.OrdinalIgnoreCase))
+        {
+            var group = new TrainingSpeakerGroup(speakerFiles.Key)
+            {
+                IsExpanded = previousExpansion.TryGetValue(speakerFiles.Key, out var wasExpanded)
+                    ? wasExpanded
+                    : groupIndex == 0,
+            };
+            foreach (var item in speakerFiles)
+            {
+                group.Files.Add(item);
+            }
+            _trainingSpeakerGroups.Add(group);
+            groupIndex++;
+        }
+        UpdateTrainingAudioActionButtons();
+    }
+
+    private static string BuildTrainingAudioDetail(ServerFileItem item)
+    {
+        var fileType = Path.GetExtension(item.Name).TrimStart('.').ToUpperInvariant();
+        var typePrefix = string.IsNullOrWhiteSpace(fileType) ? "音频" : fileType;
+        return $"{typePrefix} · {FormatTrainingAudioBytes(item.Size)}";
+    }
+
+    private static string FormatTrainingAudioBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+
+        double value = bytes;
+        string[] units = ["KB", "MB", "GB", "TB"];
+        var unitIndex = -1;
+        do
+        {
+            value /= 1024;
+            unitIndex++;
+        } while (value >= 1024 && unitIndex < units.Length - 1);
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+
+    private static (string Speaker, string DisplayName) InferTrainingPlacement(string fileName)
+    {
+        var pathParts = fileName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (pathParts.Length >= 4
+            && string.Equals(pathParts[1], "dataset", StringComparison.OrdinalIgnoreCase))
+        {
+            return (pathParts[2], string.Join('/', pathParts.Skip(3)));
+        }
+        if (pathParts.Length >= 3)
+        {
+            return (pathParts[1], string.Join('/', pathParts.Skip(2)));
+        }
+        if (pathParts.Length == 2)
+        {
+            return (pathParts[0], pathParts[1]);
+        }
+
+        var separator = fileName.IndexOf("__", StringComparison.Ordinal);
+        return separator > 0
+            ? (fileName[..separator], fileName[(separator + 2)..])
+            : ("默认说话人", pathParts.FirstOrDefault() ?? fileName);
+    }
+
+    private void UpdateTrainingAudioActionButtons()
+    {
+        var hasAudio = _trainingAudioFiles.Count > 0;
+        TrainingAudioSummaryText.Text = $"{_trainingSpeakerGroups.Count} 个音频组 · {_trainingAudioFiles.Count} 个音频文件";
+        TrainingSelectAllButton.IsEnabled = hasAudio;
+        TrainingClearButton.IsEnabled = hasAudio;
+        TrainingOrganizeButton.IsEnabled = _client.IsConnected && hasAudio && !_trainingOrganizePending;
+    }
+
+    private void UpdateSuggestedTrainingName()
+    {
+        if (!_trainingNameAutoManaged) return;
+
+        var occupied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var job in _trainingJobs)
+        {
+            if (!string.IsNullOrWhiteSpace(job.Name)) occupied.Add(job.Name.Trim());
+        }
+        foreach (var model in _voiceModelsManagement)
+        {
+            if (!string.IsNullOrWhiteSpace(model.Name)) occupied.Add(model.Name.Trim());
+        }
+        foreach (var file in _serverFilesRaw)
+        {
+            var parts = file.Name.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && string.Equals(parts[1], "dataset", StringComparison.OrdinalIgnoreCase))
+            {
+                occupied.Add(parts[0]);
+            }
+        }
+
+        SetTrainingName(TrainingNameHelper.GetAvailableModelName(occupied));
+    }
+
+    private void SetTrainingName(string value)
+    {
+        if (string.Equals(TrainingNameBox.Text, value, StringComparison.Ordinal)) return;
+        _settingTrainingName = true;
+        TrainingNameBox.Text = value;
+        _settingTrainingName = false;
     }
 
     private void ApplyVoiceModelsFromServer(JsonElement voiceElement)
     {
         var previousSelectionId = _selectedVoiceModelId;
+        var previousManagementSelectionId =
+            (VoiceModelManagementListBox.SelectedItem as VoiceModelItem)?.Id;
         var activeId = string.Empty;
         var lastUnloadedId = voiceElement.TryGetProperty("last_unloaded_id", out var lastUnloadedIdElement)
             ? lastUnloadedIdElement.GetString() ?? string.Empty
@@ -2273,8 +3814,15 @@ public partial class MainWindow : Window
                 var name = modelElement.TryGetProperty("name", out var nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty;
                 var pth = modelElement.TryGetProperty("pth", out var pthElement) ? pthElement.GetString() ?? string.Empty : string.Empty;
                 var index = modelElement.TryGetProperty("index", out var indexElement) ? indexElement.GetString() ?? string.Empty : string.Empty;
+                var speakerId = modelElement.TryGetProperty("speaker_id", out var speakerElement) && speakerElement.TryGetInt32(out var parsedSpeakerId)
+                    ? Math.Max(0, parsedSpeakerId)
+                    : 0;
                 var isActive = modelElement.TryGetProperty("active", out var activeElement) && activeElement.ValueKind == JsonValueKind.True;
                 var isLoaded = modelElement.TryGetProperty("loaded", out var loadedElement) && loadedElement.ValueKind == JsonValueKind.True;
+                var isLoading = !isLoaded
+                    && (string.Equals(id, _pendingPreloadModelId, StringComparison.Ordinal)
+                        || (_modelState == ModelState.Loading
+                            && string.Equals(id, _selectedVoiceModelId, StringComparison.Ordinal)));
                 if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(pth))
                 {
                     continue;
@@ -2291,7 +3839,10 @@ public partial class MainWindow : Window
                     Name = name,
                     Pth = pth,
                     Index = index,
+                    SpeakerId = speakerId,
                     IsActive = isActive,
+                    IsLoaded = isLoaded,
+                    IsLoading = isLoading,
                     ShowStatusDot = true,
                 });
 
@@ -2306,6 +3857,11 @@ public partial class MainWindow : Window
                     _failedVoiceModelIds.Remove(id);
                     justAdded.StatusBrush = statusLoadedBrush;
                     justAdded.StatusHint = "已加载到显存，可立即使用";
+                }
+                else if (isLoading)
+                {
+                    justAdded.StatusBrush = new SolidColorBrush(Color.Parse("#2196F3"));
+                    justAdded.StatusHint = "加载中…";
                 }
                 else if (_failedVoiceModelIds.Contains(id))
                 {
@@ -2323,6 +3879,12 @@ public partial class MainWindow : Window
                     justAdded.StatusHint = "未加载到显存";
                 }
             }
+        }
+
+        if (!string.IsNullOrEmpty(_pendingPreloadModelId)
+            && list.Any(item => string.Equals(item.Id, _pendingPreloadModelId, StringComparison.Ordinal) && item.IsLoaded))
+        {
+            _pendingPreloadModelId = null;
         }
 
         _voiceModelsManagement.Clear();
@@ -2361,6 +3923,7 @@ public partial class MainWindow : Window
             _serverPassthroughVoice = false;
             _modelPath = string.Empty;
             _indexPath = string.Empty;
+            _speakerId = 0;
         }
         else if (string.Equals(resolvedId, VoiceModelItem.ServerRawId, StringComparison.Ordinal))
         {
@@ -2370,6 +3933,7 @@ public partial class MainWindow : Window
             _serverPassthroughVoice = true;
             _modelPath = string.Empty;
             _indexPath = string.Empty;
+            _speakerId = 0;
         }
         else
         {
@@ -2378,11 +3942,13 @@ public partial class MainWindow : Window
             {
                 runtimeSelectionChanged = _bypassServerVoice || _serverPassthroughVoice
                     || !string.Equals(_modelPath, selectedRuntimeModel.Pth, StringComparison.Ordinal)
-                    || !string.Equals(_indexPath, selectedRuntimeModel.Index, StringComparison.Ordinal);
+                    || !string.Equals(_indexPath, selectedRuntimeModel.Index, StringComparison.Ordinal)
+                    || _speakerId != selectedRuntimeModel.SpeakerId;
                 _bypassServerVoice = false;
                 _serverPassthroughVoice = false;
                 _modelPath = selectedRuntimeModel.Pth;
                 _indexPath = selectedRuntimeModel.Index;
+                _speakerId = selectedRuntimeModel.SpeakerId;
             }
         }
 
@@ -2391,15 +3957,28 @@ public partial class MainWindow : Window
             _ = SendConfigurationAsync(true);
         }
 
-        // Only clear switch rollback marker after server confirms target became active.
+        var selectedModelConfirmed = list.FirstOrDefault(
+            item => string.Equals(item.Id, _selectedVoiceModelId, StringComparison.Ordinal));
         if (!string.IsNullOrEmpty(_prevSelectedVoiceModelId)
-            && !string.IsNullOrEmpty(activeId)
-            && string.Equals(activeId, _selectedVoiceModelId, StringComparison.Ordinal))
+            && _modelState == ModelState.Ready
+            && string.Equals(activeId, _selectedVoiceModelId, StringComparison.Ordinal)
+            && selectedModelConfirmed?.IsLoaded == true)
         {
             _prevSelectedVoiceModelId = null;
         }
 
-        VoiceModelManagementListBox.SelectedItem = _voiceModelsManagement.FirstOrDefault(item => string.Equals(item.Id, activeId, StringComparison.Ordinal));
+        _suppressModelCardSelectionChanged = true;
+        try
+        {
+            VoiceModelManagementListBox.SelectedItem = string.IsNullOrWhiteSpace(previousManagementSelectionId)
+                ? null
+                : _voiceModelsManagement.FirstOrDefault(
+                    item => string.Equals(item.Id, previousManagementSelectionId, StringComparison.Ordinal));
+        }
+        finally
+        {
+            _suppressModelCardSelectionChanged = false;
+        }
         UpdateVoiceModelSelectionState();
 
         if (!string.IsNullOrWhiteSpace(activeId))
@@ -2413,6 +3992,7 @@ public partial class MainWindow : Window
 
         RecomputeBoundFiles();
         RefreshServerFilesView();
+        UpdateSuggestedTrainingName();
 
         Log($"已获取音色模型列表，共 {list.Count} 项。");
     }
@@ -2437,6 +4017,8 @@ public partial class MainWindow : Window
         if (failedVm != null)
         {
             _failedVoiceModelIds.Add(targetId);
+            failedVm.IsLoading = false;
+            failedVm.IsLoaded = false;
             failedVm.StatusBrush = new SolidColorBrush(Color.Parse("#F44336"));
             failedVm.StatusHint = "加载失败，点击重试";
         }
@@ -2471,6 +4053,7 @@ public partial class MainWindow : Window
                 _serverPassthroughVoice = false;
                 _modelPath = vm.Pth;
                 _indexPath = vm.Index;
+                _speakerId = vm.SpeakerId;
                 ModelStatusTextBlock.Text = vm.Name;
             }
         }
@@ -2490,6 +4073,110 @@ public partial class MainWindow : Window
         {
             vm.IsUserSelected = string.Equals(vm.Id, _selectedVoiceModelId, StringComparison.Ordinal);
         }
+
+        CurrentVoiceNameTextBlock.Text = _selectedVoiceModelId switch
+        {
+            VoiceModelItem.RawId => "原声",
+            VoiceModelItem.ServerRawId => "原声（服务端）",
+            _ => _voiceModelsManagement.FirstOrDefault(vm =>
+                     string.Equals(vm.Id, _selectedVoiceModelId, StringComparison.Ordinal))?.Name
+                 ?? ModelStatusTextBlock.Text,
+        };
+    }
+
+    private void UpdateSlotPlaceholderVisibility()
+    {
+        HubertSlotPlaceholder.IsVisible = _hubertSlotItems.Count == 0;
+        RmvpeSlotPlaceholder.IsVisible = _rmvpeSlotItems.Count == 0;
+        PymssWeightSlotPlaceholder.IsVisible = _pymssWeightSlotItems.Count == 0;
+        PymssConfigSlotPlaceholder.IsVisible = _pymssConfigSlotItems.Count == 0;
+        PretrainedGeneratorSlotPlaceholder.IsVisible = _pretrainedGeneratorSlotItems.Count == 0;
+        PretrainedDiscriminatorSlotPlaceholder.IsVisible = _pretrainedDiscriminatorSlotItems.Count == 0;
+    }
+
+    private void SetVoiceModelLoadingState(string id, string hint)
+    {
+        var model = _voiceModelsManagement.FirstOrDefault(vm => string.Equals(vm.Id, id, StringComparison.Ordinal))
+            ?? _voiceModelsSelection.FirstOrDefault(vm => string.Equals(vm.Id, id, StringComparison.Ordinal));
+        if (model == null)
+        {
+            return;
+        }
+
+        _failedVoiceModelIds.Remove(id);
+        model.IsLoaded = false;
+        model.IsLoading = true;
+        model.StatusBrush = new SolidColorBrush(Color.Parse("#2196F3"));
+        model.StatusHint = hint;
+    }
+
+    private bool EnsureRequiredBaseModelSlotsConfigured()
+    {
+        var missingHubert = !_hubertSlotItems.Any(item => item.IsActive);
+        var missingRmvpe = string.Equals(_f0Method, "rmvpe", StringComparison.OrdinalIgnoreCase)
+            && !_rmvpeSlotItems.Any(item => item.IsActive);
+
+        string message;
+        if (missingHubert && missingRmvpe)
+        {
+            message = "未配置 HuBERT Base 和 RMVPE 模型槽位";
+        }
+        else if (missingHubert)
+        {
+            message = "未配置 HuBERT Base 模型槽位";
+        }
+        else if (missingRmvpe)
+        {
+            message = "未配置 RMVPE 模型槽位";
+        }
+        else
+        {
+            _lastBaseModelSlotWarning = string.Empty;
+            return true;
+        }
+
+        SetModelState(ModelState.NotReady, message);
+        if (!string.Equals(_lastBaseModelSlotWarning, message, StringComparison.Ordinal))
+        {
+            _lastBaseModelSlotWarning = message;
+            Log($"{message}，请先在“模型与文件”中设置。");
+            ShowErrorToast(message);
+        }
+        return false;
+    }
+
+    private static string GetModelLoadErrorToastText(string errorMessage)
+    {
+        var markerIndex = errorMessage.IndexOf("未配置 ", StringComparison.Ordinal);
+        return markerIndex >= 0 ? errorMessage[markerIndex..].TrimEnd('。') : "模型加载失败";
+    }
+
+    private void ResetVoiceModelsForDisconnectedState()
+    {
+        VoiceModelManagementListBox.SelectedItem = null;
+        _voiceModelsManagement.Clear();
+        _voiceModelsSelection.Clear();
+        _voiceModelsSelection.Add(_rawVoiceModelItem);
+
+        _rawVoiceModelItem.IsActive = false;
+        _rawVoiceModelItem.IsLoaded = false;
+        _rawVoiceModelItem.IsLoading = false;
+        _serverRawVoiceModelItem.IsActive = false;
+        _serverRawVoiceModelItem.IsLoaded = false;
+        _serverRawVoiceModelItem.IsLoading = false;
+        _selectedVoiceModelId = VoiceModelItem.RawId;
+        _prevSelectedVoiceModelId = null;
+        _pendingPreloadModelId = null;
+        _lastBaseModelSlotWarning = string.Empty;
+        _recentUnloadedVoiceModelId = string.Empty;
+        _failedVoiceModelIds.Clear();
+        _modelPath = string.Empty;
+        _indexPath = string.Empty;
+        _speakerId = 0;
+        _bypassServerVoice = true;
+        _serverPassthroughVoice = false;
+        ModelStatusTextBlock.Text = "原声";
+        UpdateVoiceModelSelectionState();
     }
 
     private void ApplySlotsFromServer(JsonElement slotsElement)
@@ -2521,6 +4208,17 @@ public partial class MainWindow : Window
         var active = state.TryGetProperty("active", out var activeElement) && activeElement.ValueKind == JsonValueKind.String
             ? activeElement.GetString() ?? string.Empty
             : string.Empty;
+        var previousActive = slot switch
+        {
+            "hubert_base" => _hubertSlotItems.FirstOrDefault(item => item.IsActive)?.FileName ?? string.Empty,
+            "rmvpe" => _rmvpeSlotItems.FirstOrDefault(item => item.IsActive)?.FileName ?? string.Empty,
+            "pymss_weight" => _pymssWeightSlotItems.FirstOrDefault(item => item.IsActive)?.FileName ?? string.Empty,
+            "pymss_config" => _pymssConfigSlotItems.FirstOrDefault(item => item.IsActive)?.FileName ?? string.Empty,
+            "pretrained_g" => _pretrainedGeneratorSlotItems.FirstOrDefault(item => item.IsActive)?.FileName ?? string.Empty,
+            "pretrained_d" => _pretrainedDiscriminatorSlotItems.FirstOrDefault(item => item.IsActive)?.FileName ?? string.Empty,
+            _ => string.Empty,
+        };
+        var activeChanged = !string.Equals(previousActive, active, StringComparison.OrdinalIgnoreCase);
 
         if (state.TryGetProperty("allowed_ext", out var extElement) && extElement.ValueKind == JsonValueKind.Array)
         {
@@ -2548,6 +4246,10 @@ public partial class MainWindow : Window
         {
             "hubert_base" => _hubertSlotItems,
             "rmvpe" => _rmvpeSlotItems,
+            "pymss_weight" => _pymssWeightSlotItems,
+            "pymss_config" => _pymssConfigSlotItems,
+            "pretrained_g" => _pretrainedGeneratorSlotItems,
+            "pretrained_d" => _pretrainedDiscriminatorSlotItems,
             _ => null,
         };
 
@@ -2555,6 +4257,10 @@ public partial class MainWindow : Window
         {
             "hubert_base" => HubertSlotListBox,
             "rmvpe" => RmvpeSlotListBox,
+            "pymss_weight" => PymssWeightSlotListBox,
+            "pymss_config" => PymssConfigSlotListBox,
+            "pretrained_g" => PretrainedGeneratorSlotListBox,
+            "pretrained_d" => PretrainedDiscriminatorSlotListBox,
             _ => null,
         };
 
@@ -2563,13 +4269,13 @@ public partial class MainWindow : Window
             return false;
         }
 
+        var previousUiSelection = (listBox.SelectedItem as SlotBindingItem)?.FileName;
         _suppressSlotSelectionChanged = true;
         try
         {
             var existingFiles = list.Select(item => item.FileName).ToList();
             var filesChanged = existingFiles.Count != files.Count || !existingFiles.SequenceEqual(files, StringComparer.OrdinalIgnoreCase);
 
-            SlotBindingItem? activeItem = null;
             if (filesChanged)
             {
                 list.Clear();
@@ -2585,10 +4291,6 @@ public partial class MainWindow : Window
                         StatusHint = isItemActive ? "已激活" : "未激活",
                     };
                     list.Add(item);
-                    if (item.IsActive)
-                    {
-                        activeItem = item;
-                    }
                 }
             }
             else
@@ -2598,15 +4300,17 @@ public partial class MainWindow : Window
                     item.IsActive = string.Equals(item.FileName, active, StringComparison.OrdinalIgnoreCase);
                     item.StatusBrush = item.IsActive ? new SolidColorBrush(Color.Parse("#2E9F4D")) : new SolidColorBrush(Color.Parse("#8B8B8B"));
                     item.StatusHint = item.IsActive ? "已激活" : "未激活";
-                    if (item.IsActive)
-                    {
-                        activeItem = item;
-                    }
                 }
             }
 
-            listBox.SelectedItem = activeItem;
-            return filesChanged;
+            // Runtime activation is represented by the status dot, not by the
+            // ListBox selection. Only restore a selection that originated from
+            // an earlier user click; never auto-select the active slot item.
+            listBox.SelectedItem = string.IsNullOrWhiteSpace(previousUiSelection)
+                ? null
+                : list.FirstOrDefault(item =>
+                    string.Equals(item.FileName, previousUiSelection, StringComparison.OrdinalIgnoreCase));
+            return filesChanged || activeChanged;
         }
         finally
         {
@@ -2627,6 +4331,26 @@ public partial class MainWindow : Window
             _boundFiles.Add(item.FileName);
         }
 
+        foreach (var item in _pymssWeightSlotItems)
+        {
+            _boundFiles.Add(item.FileName);
+        }
+
+        foreach (var item in _pymssConfigSlotItems)
+        {
+            _boundFiles.Add(item.FileName);
+        }
+
+        foreach (var item in _pretrainedGeneratorSlotItems)
+        {
+            _boundFiles.Add(item.FileName);
+        }
+
+        foreach (var item in _pretrainedDiscriminatorSlotItems)
+        {
+            _boundFiles.Add(item.FileName);
+        }
+
         foreach (var item in _voiceModelsManagement)
         {
             if (!string.IsNullOrWhiteSpace(item.Pth))
@@ -2641,8 +4365,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RefreshServerFilesView()
+    private void RefreshServerFilesView(
+        string? animatedFolderPath = null,
+        ServerFileLayoutSnapshot? previousLayout = null)
     {
+        var reflowVersion = ++_serverFileReflowVersion;
         var desired = new List<ServerFileItem>();
         desired.AddRange(_uploadingFiles);
 
@@ -2655,26 +4382,354 @@ public partial class MainWindow : Window
             query = query.Where(item => !_boundFiles.Contains(item.Name));
         }
 
-        query = _fileSortMode switch
+        var files = query.ToList();
+        foreach (var file in files)
         {
-            "time_asc" => query.OrderBy(item => item.ModifiedAt),
-            "name_asc" => query.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase),
-            "name_desc" => query.OrderByDescending(item => item.Name, StringComparer.OrdinalIgnoreCase),
-            _ => query.OrderByDescending(item => item.ModifiedAt),
+            var parts = file.Name.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            file.IsFolder = false;
+            file.DisplayName = parts.LastOrDefault() ?? file.Name;
+            file.ParentPath = parts.Length > 1 ? string.Join('/', parts.Take(parts.Length - 1)) : string.Empty;
+            file.TreeIndent = Math.Max(0, parts.Length - 1) * 18;
+            file.TreeOpacity = 1.0;
+            file.TreeOffsetY = 0.0;
+        }
+
+        var folderPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            var parts = file.Name.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            for (var depth = 1; depth < parts.Length; depth++)
+            {
+                folderPaths.Add(string.Join('/', parts.Take(depth)));
+            }
+        }
+        _expandedServerFolders.IntersectWith(folderPaths);
+
+        foreach (var stalePath in _serverFolderCache.Keys.Where(path => !folderPaths.Contains(path)).ToList())
+        {
+            _serverFolderCache.Remove(stalePath);
+            _serverFolderAnimationVersions.Remove(stalePath);
+        }
+        var folders = new Dictionary<string, ServerFileItem>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in folderPaths)
+        {
+            if (!_serverFolderCache.TryGetValue(path, out var folder))
+            {
+                folder = new ServerFileItem { Name = path, IsFolder = true };
+                _serverFolderCache[path] = folder;
+            }
+            var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var prefix = path + "/";
+            var descendants = files.Where(file => file.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+            folder.DisplayName = parts.LastOrDefault() ?? path;
+            folder.ParentPath = parts.Length > 1 ? string.Join('/', parts.Take(parts.Length - 1)) : string.Empty;
+            folder.TreeIndent = Math.Max(0, parts.Length - 1) * 18;
+            folder.ChildCount = descendants.Count;
+            folder.Size = descendants.Sum(file => file.Size);
+            folder.ModifiedAt = descendants.Count > 0 ? descendants.Max(file => file.ModifiedAt) : DateTimeOffset.MinValue;
+            folder.TreeOpacity = 1.0;
+            folder.TreeOffsetY = 0.0;
+            folder.IsExpanded = _expandedServerFolders.Contains(path);
+            folder.IsModelRootFolder = parts.Length == 1
+                && (folderPaths.Contains($"{path}/dataset")
+                    || descendants.Any(file =>
+                        file.Name.EndsWith(".pth", StringComparison.OrdinalIgnoreCase)
+                        || file.Name.EndsWith(".index", StringComparison.OrdinalIgnoreCase)));
+            folders[path] = folder;
+        }
+
+        IEnumerable<ServerFileItem> SortItems(IEnumerable<ServerFileItem> items) => _fileSortMode switch
+        {
+            "time_asc" => items.OrderBy(item => item.ModifiedAt),
+            "name_asc" => items.OrderBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase),
+            "name_desc" => items.OrderByDescending(item => item.DisplayName, StringComparer.OrdinalIgnoreCase),
+            _ => items.OrderByDescending(item => item.ModifiedAt),
         };
 
-        desired.AddRange(query);
-
-        _serverFiles.Clear();
-        foreach (var item in desired)
+        void AppendLevel(string parentPath)
         {
-            _serverFiles.Add(item);
+            var childFolders = folders.Values.Where(folder =>
+                string.Equals(folder.ParentPath, parentPath, StringComparison.OrdinalIgnoreCase));
+            foreach (var folder in SortItems(childFolders))
+            {
+                desired.Add(folder);
+                if (folder.IsExpanded)
+                {
+                    AppendLevel(folder.Name);
+                }
+            }
+
+            var childFiles = files.Where(file =>
+                string.Equals(file.ParentPath, parentPath, StringComparison.OrdinalIgnoreCase));
+            desired.AddRange(SortItems(childFiles));
         }
+
+        AppendLevel(string.Empty);
+
+        var enteringItems = string.IsNullOrWhiteSpace(animatedFolderPath)
+            ? []
+            : desired.Where(item => IsServerPathDescendant(item.Name, animatedFolderPath)).ToList();
+        foreach (var item in enteringItems)
+        {
+            item.TreeOpacity = 0.0;
+            item.TreeOffsetY = -5.0;
+        }
+
+        for (var index = 0; index < desired.Count; index++)
+        {
+            var desiredItem = desired[index];
+            if (index < _serverFiles.Count && ReferenceEquals(_serverFiles[index], desiredItem))
+            {
+                continue;
+            }
+            var existingIndex = -1;
+            for (var candidate = index; candidate < _serverFiles.Count; candidate++)
+            {
+                if (ReferenceEquals(_serverFiles[candidate], desiredItem))
+                {
+                    existingIndex = candidate;
+                    break;
+                }
+            }
+            if (existingIndex >= 0)
+            {
+                _serverFiles.Move(existingIndex, index);
+            }
+            else
+            {
+                _serverFiles.Insert(index, desiredItem);
+            }
+        }
+        while (_serverFiles.Count > desired.Count)
+        {
+            _serverFiles.RemoveAt(_serverFiles.Count - 1);
+        }
+
+        if (previousLayout is not null)
+        {
+            Dispatcher.UIThread.Post(
+                () => AnimateServerFileReflow(previousLayout, reflowVersion),
+                DispatcherPriority.Loaded);
+        }
+
+        if (enteringItems.Count > 0)
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (reflowVersion != _serverFileReflowVersion)
+                {
+                    return;
+                }
+                foreach (var item in enteringItems)
+                {
+                    item.TreeOpacity = 1.0;
+                    item.TreeOffsetY = 0.0;
+                }
+            }, DispatcherPriority.Loaded);
+        }
+    }
+
+    private ServerFileLayoutSnapshot CaptureServerFileLayout()
+    {
+        var snapshot = new ServerFileLayoutSnapshot();
+        if (FindServerFilesScrollViewer() is { } scrollViewer)
+        {
+            snapshot.ScrollOffset = scrollViewer.Offset;
+        }
+        var realizedItems = new List<(int Index, double Y, double Height)>();
+        for (var index = 0; index < _serverFiles.Count; index++)
+        {
+            var item = _serverFiles[index];
+            snapshot.ItemIndices[item] = index;
+            if (ServerFilesListBox.ContainerFromItem(item) is not Control container)
+            {
+                continue;
+            }
+
+            var position = container.TranslatePoint(new Point(0, 0), ServerFilesListBox);
+            if (position.HasValue)
+            {
+                snapshot.VisiblePositions[item] = position.Value.Y;
+                realizedItems.Add((index, position.Value.Y, container.Bounds.Height));
+            }
+        }
+
+        var measuredStrides = new List<double>();
+        for (var index = 1; index < realizedItems.Count; index++)
+        {
+            var previous = realizedItems[index - 1];
+            var current = realizedItems[index];
+            var indexDistance = current.Index - previous.Index;
+            var stride = indexDistance > 0 ? (current.Y - previous.Y) / indexDistance : 0.0;
+            if (stride > 1.0 && double.IsFinite(stride))
+            {
+                measuredStrides.Add(stride);
+            }
+        }
+
+        if (measuredStrides.Count == 0)
+        {
+            measuredStrides.AddRange(realizedItems
+                .Select(item => item.Height)
+                .Where(height => height > 1.0 && double.IsFinite(height)));
+        }
+
+        if (measuredStrides.Count > 0)
+        {
+            measuredStrides.Sort();
+            snapshot.ItemStride = measuredStrides[measuredStrides.Count / 2];
+        }
+
+        return snapshot;
+    }
+
+    private ScrollViewer? FindServerFilesScrollViewer()
+    {
+        return ServerFilesListBox
+            .GetVisualDescendants()
+            .OfType<ScrollViewer>()
+            .FirstOrDefault();
+    }
+
+    private void RestoreServerFileScrollAnchor(ServerFileLayoutSnapshot previousLayout)
+    {
+        var scrollViewer = FindServerFilesScrollViewer();
+        if (scrollViewer is null || previousLayout.ScrollOffset is not { } previousOffset)
+        {
+            return;
+        }
+
+        // Avalonia may preserve the old raw offset while the extent is shrinking and
+        // then clamp it to the new maximum. With a virtualized ListBox this can move
+        // the viewport straight to the bottom. Reconstruct the intended offset from
+        // the first previously visible item that survived the tree change.
+        var anchor = previousLayout.VisiblePositions
+            .Where(entry => previousLayout.ItemIndices.ContainsKey(entry.Key)
+                && _serverFiles.IndexOf(entry.Key) >= 0)
+            .OrderBy(entry => Math.Abs(entry.Value))
+            .FirstOrDefault();
+
+        var targetY = previousOffset.Y;
+        if (anchor.Key is not null
+            && previousLayout.ItemIndices.TryGetValue(anchor.Key, out var oldIndex))
+        {
+            var newIndex = _serverFiles.IndexOf(anchor.Key);
+            if (ServerFilesListBox.ContainerFromItem(anchor.Key) is Control container
+                && container.TranslatePoint(new Point(0, 0), ServerFilesListBox) is { } newPosition)
+            {
+                targetY = scrollViewer.Offset.Y + newPosition.Y - anchor.Value;
+            }
+            else if (previousLayout.ItemStride > 0.0)
+            {
+                targetY += (newIndex - oldIndex) * previousLayout.ItemStride;
+            }
+        }
+
+        var maximumY = Math.Max(0.0, scrollViewer.Extent.Height - scrollViewer.Viewport.Height);
+        targetY = Math.Clamp(targetY, 0.0, maximumY);
+        if (Math.Abs(scrollViewer.Offset.Y - targetY) > 0.1)
+        {
+            scrollViewer.Offset = new Vector(previousOffset.X, targetY);
+        }
+    }
+
+    private void AnimateServerFileReflow(ServerFileLayoutSnapshot previousLayout, int reflowVersion)
+    {
+        if (reflowVersion != _serverFileReflowVersion)
+        {
+            return;
+        }
+
+        RestoreServerFileScrollAnchor(previousLayout);
+        Dispatcher.UIThread.Post(
+            () => AnimateServerFileReflowCore(previousLayout, reflowVersion),
+            DispatcherPriority.Render);
+    }
+
+    private void AnimateServerFileReflowCore(ServerFileLayoutSnapshot previousLayout, int reflowVersion)
+    {
+        if (reflowVersion != _serverFileReflowVersion)
+        {
+            return;
+        }
+
+        // Loaded 与 Render 之间虚拟化面板还可能更新一次 Extent 并再次钳制
+        // Offset；在最终测量前再锚定一次，避免出现一帧后的向下跳动。
+        RestoreServerFileScrollAnchor(previousLayout);
+
+        var containers = new List<(ServerFileItem Item, int NewIndex, Control Container)>();
+        for (var newIndex = 0; newIndex < _serverFiles.Count; newIndex++)
+        {
+            var item = _serverFiles[newIndex];
+            if (ServerFilesListBox.ContainerFromItem(item) is not Control container)
+            {
+                continue;
+            }
+
+            // The list owns this transform. Clear any earlier reflow animation before
+            // measuring the item's new layout position.
+            container.RenderTransform = null;
+            containers.Add((item, newIndex, container));
+        }
+
+        foreach (var (item, newIndex, container) in containers)
+        {
+            var position = container.TranslatePoint(new Point(0, 0), ServerFilesListBox);
+            if (!position.HasValue)
+            {
+                continue;
+            }
+
+            double offsetY;
+            if (previousLayout.VisiblePositions.TryGetValue(item, out var oldY))
+            {
+                offsetY = oldY - position.Value.Y;
+            }
+            else if (previousLayout.ItemStride > 0.0
+                && previousLayout.ItemIndices.TryGetValue(item, out var oldIndex))
+            {
+                // The item was outside the realized viewport before the change,
+                // but is visible now. Its index delta reconstructs the old visual
+                // position so it joins the same reflow animation instead of popping in.
+                offsetY = (oldIndex - newIndex) * previousLayout.ItemStride;
+            }
+            else
+            {
+                continue;
+            }
+
+            if (Math.Abs(offsetY) < 0.5)
+            {
+                continue;
+            }
+
+            var transform = new TranslateTransform { Y = offsetY };
+            transform.Transitions = new Transitions
+            {
+                new DoubleTransition
+                {
+                    Property = TranslateTransform.YProperty,
+                    Duration = TimeSpan.FromMilliseconds(190),
+                    Easing = new CubicEaseOut(),
+                },
+            };
+            container.RenderTransform = transform;
+
+            Dispatcher.UIThread.Post(
+                () => transform.Y = 0.0,
+                DispatcherPriority.Loaded);
+        }
+    }
+
+    private static bool IsServerPathDescendant(string candidate, string folderPath)
+    {
+        return candidate.StartsWith(folderPath + "/", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task BindSelectedFilesToSlotAsync(string slot)
     {
-        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>().ToList() ?? [];
+        var selectedItems = ServerFilesListBox.SelectedItems?.OfType<ServerFileItem>()
+            .Where(item => !item.IsFolder && !item.IsUploadFolder).ToList() ?? [];
         if (selectedItems.Count == 0)
         {
             Log("请先在右侧选择至少一个文件。");
@@ -2744,21 +4799,28 @@ public partial class MainWindow : Window
         return await window.ShowDialog<bool>(this);
     }
 
-    private async Task UploadFileToServerAsync(string filePath)
+    private async Task<string?> UploadFileToServerAsync(
+        string filePath,
+        string? remoteName = null,
+        ServerFileItem? folderChild = null)
     {
+        string? finalName = null;
+        ServerFileItem? uploadItem = folderChild;
+        string? activeUploadId = null;
         await _uploadSerialLock.WaitAsync();
         try
         {
             if (!_client.IsConnected)
             {
                 Log("未连接到服务器。");
-                return;
+                return null;
             }
 
             var fileInfo = new FileInfo(filePath);
-            var uploadItem = new ServerFileItem
+            var requestedName = NormalizeRemotePath(string.IsNullOrWhiteSpace(remoteName) ? fileInfo.Name : remoteName);
+            uploadItem ??= new ServerFileItem
             {
-                Name = fileInfo.Name,
+                Name = requestedName,
                 IsUploading = true,
                 Status = "计算 SHA256",
                 TotalBytes = fileInfo.Length,
@@ -2766,19 +4828,32 @@ public partial class MainWindow : Window
                 ModifiedAt = DateTimeOffset.Now,
             };
 
-            _uploadingFiles.RemoveAll(item => string.Equals(item.Name, uploadItem.Name, StringComparison.OrdinalIgnoreCase));
-            _uploadingFiles.Insert(0, uploadItem);
-            RefreshServerFilesView();
+            uploadItem.IsUploading = true;
+            uploadItem.UploadCompleted = false;
+            uploadItem.UploadFailed = false;
+            uploadItem.Status = "计算 SHA256";
+            uploadItem.TotalBytes = fileInfo.Length;
+            uploadItem.SentBytes = 0;
+            if (folderChild is null)
+            {
+                _uploadingFiles.RemoveAll(item => string.Equals(item.Name, uploadItem.Name, StringComparison.OrdinalIgnoreCase));
+                _uploadingFiles.Insert(0, uploadItem);
+                RefreshServerFilesView();
+            }
 
             var sha256 = await ComputeSha256HexAsync(filePath);
             uploadItem.Status = "准备上传";
 
             _uploadReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            await _client.SendCommandAsync(new { command = "upload_init", name = fileInfo.Name, size = fileInfo.Length, sha256 });
-            var ready = await _uploadReadyTcs.Task;
+            await _client.SendCommandAsync(new { command = "upload_init", name = requestedName, size = fileInfo.Length, sha256 });
+            var ready = await _uploadReadyTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            activeUploadId = ready.UploadId;
 
             _uploadItemsById[ready.UploadId] = uploadItem;
-            uploadItem.Name = ready.Name;
+            if (folderChild is null)
+            {
+                uploadItem.Name = ready.Name;
+            }
             uploadItem.TotalBytes = ready.TotalBytes;
             uploadItem.SentBytes = ready.ReceivedBytes;
             uploadItem.Status = ready.ReceivedBytes > 0 ? "续传中" : "上传中";
@@ -2813,32 +4888,67 @@ public partial class MainWindow : Window
             uploadItem.Status = "校验中";
             _uploadDoneTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
             await _client.SendCommandAsync(new { command = "upload_finish", upload_id = ready.UploadId });
-            var done = await _uploadDoneTcs.Task;
+            var done = await _uploadDoneTcs.Task.WaitAsync(TimeSpan.FromMinutes(2));
 
             _uploadItemsById.TryRemove(ready.UploadId, out _);
             uploadItem.IsUploading = false;
-            uploadItem.Name = done.FinalName;
+            if (folderChild is null)
+            {
+                uploadItem.Name = done.FinalName;
+            }
+            finalName = done.FinalName;
+            _hiddenTrainingAudioFiles.Remove(finalName);
             uploadItem.Status = "完成";
-            _uploadingFiles.RemoveAll(item => ReferenceEquals(item, uploadItem));
-            await _client.SendCommandAsync(new { command = "files_list" });
+            uploadItem.UploadCompleted = true;
+            if (folderChild is null)
+            {
+                _uploadingFiles.RemoveAll(item => ReferenceEquals(item, uploadItem));
+            }
+            if (folderChild is null)
+            {
+                await _client.SendCommandAsync(new { command = "files_list" });
+            }
         }
         catch (OperationCanceledException)
         {
             Log("上传已取消：连接已断开。");
-            _uploadReadyTcs = null;
-            _uploadDoneTcs = null;
+            if (uploadItem is not null)
+            {
+                uploadItem.IsUploading = false;
+                uploadItem.UploadFailed = true;
+                uploadItem.Status = "已取消";
+            }
         }
         catch (Exception ex)
         {
             Log($"上传失败: {ex.Message}");
-            ShowErrorToast("上传失败");
-            _uploadReadyTcs = null;
-            _uploadDoneTcs = null;
+            if (folderChild is null)
+            {
+                ShowErrorToast("上传失败");
+            }
+            if (uploadItem is not null)
+            {
+                uploadItem.IsUploading = false;
+                uploadItem.UploadFailed = true;
+                uploadItem.Status = ex is TimeoutException ? "上传超时" : "上传失败";
+            }
         }
         finally
         {
+            if (!string.IsNullOrWhiteSpace(activeUploadId))
+            {
+                _uploadItemsById.TryRemove(activeUploadId, out _);
+            }
+            if (folderChild is null && uploadItem is not null && !uploadItem.UploadCompleted)
+            {
+                _uploadingFiles.RemoveAll(item => ReferenceEquals(item, uploadItem));
+                RefreshServerFilesView();
+            }
+            _uploadReadyTcs = null;
+            _uploadDoneTcs = null;
             _uploadSerialLock.Release();
         }
+        return finalName;
     }
 
     private static async Task<string> ComputeSha256HexAsync(string filePath)
@@ -2951,16 +5061,22 @@ public partial class MainWindow : Window
             {
                 if (isError)
                 {
+                    vm.IsLoading = false;
+                    vm.IsLoaded = false;
                     vm.StatusBrush = errorBrush;
                     vm.StatusHint = "加载失败";
                 }
                 else if (isLoading)
                 {
+                    vm.IsLoading = true;
+                    vm.IsLoaded = false;
                     vm.StatusBrush = loadingBrush;
                     vm.StatusHint = "加载中…";
                 }
                 else
                 {
+                    vm.IsLoading = false;
+                    vm.IsLoaded = true;
                     vm.StatusBrush = readyBrush;
                     vm.StatusHint = "已加载到显存，可立即使用";
                 }
@@ -3014,7 +5130,9 @@ public partial class MainWindow : Window
     private void UpdateStreamingToggleEnabled()
     {
         bool canStartBypass = _bypassServerVoice;
-        bool canStartViaServer = _client.IsConnected && (_serverPassthroughVoice || _modelState == ModelState.Ready);
+        bool canStartViaServer = _client.IsConnected
+            && _serverConfigurationAccepted
+            && (_serverPassthroughVoice || _modelState == ModelState.Ready);
         StreamingToggleButton.IsEnabled = _isPlaying || canStartBypass || canStartViaServer;
     }
 
@@ -3024,11 +5142,16 @@ public partial class MainWindow : Window
         StreamingToggleButton.Content = isStreaming ? "停止" : "开始变声";
         InputDeviceComboBox.IsEnabled = !isStreaming && _audioInputDevices.Count > 0;
         OutputDeviceComboBox.IsEnabled = !isStreaming && _audioOutputDevices.Count > 0;
-        GlobalStatusTextBlock.Text = isStreaming ? "变声中" : _client.IsConnected ? "已连接" : "未连接";
+        GlobalStatusTextBlock.Text = isStreaming
+            ? "变声中"
+            : _client.IsConnected
+                ? (_client.IsLocalConnection ? "本地直连" : "已连接")
+                : "未连接";
     }
 
     private void ScheduleRealtimeConfigSend()
     {
+        ScheduleClientSettingsSave();
         if (!_client.IsConnected)
         {
             return;
@@ -3068,10 +5191,12 @@ public partial class MainWindow : Window
         {
             "model_path",
             "index_path",
+            "speaker_id",
             "f0_up_key",
             "block_time",
             "crossfade_length",
             "extra_time",
+            "stream_chunk_ms",
             "formant_shift",
             "f0method",
             "index_rate",
@@ -3089,8 +5214,10 @@ public partial class MainWindow : Window
             "block_time",
             "crossfade_length",
             "extra_time",
+            "stream_chunk_ms",
             "formant_shift",
             "index_rate",
+            "speaker_id",
             "silence_db_threshold",
             "silence_gate_atten",
             "noise_reduce_prop_decrease",
@@ -3131,22 +5258,32 @@ public partial class MainWindow : Window
             return;
         }
 
-        var modelPath = _serverPassthroughVoice ? string.Empty : _modelPath;
-        var indexPath = _serverPassthroughVoice ? string.Empty : _indexPath;
-        var indexRate = _serverPassthroughVoice ? 0.0f : _indexRate;
+        if (!_serverPassthroughVoice && !_bypassServerVoice && !EnsureRequiredBaseModelSlotsConfigured())
+        {
+            return;
+        }
+        // Local raw mode does not send audio to the server, but the newly
+        // connected audio endpoint still needs one valid baseline config.
+        // Put it in server passthrough until the user selects a server mode.
+        var passthrough = _serverPassthroughVoice || _bypassServerVoice;
+        var modelPath = passthrough ? string.Empty : _modelPath;
+        var indexPath = passthrough ? string.Empty : _indexPath;
+        var indexRate = passthrough ? 0.0f : _indexRate;
 
         var currentConfig = new Dictionary<string, object>
         {
             { "model_path", modelPath },
             { "index_path", indexPath },
+            { "speaker_id", _speakerId },
             { "f0_up_key", _f0UpKey },
             { "block_time", _blockTime },
             { "crossfade_length", _crossfadeLength },
             { "extra_time", _extraTime },
+            { "stream_chunk_ms", _serverStreamChunkMs },
             { "formant_shift", _formantShift },
             { "f0method", _f0Method },
             { "index_rate", indexRate },
-            { "passthrough", _serverPassthroughVoice },
+            { "passthrough", passthrough },
             { "silence_db_threshold", _silenceDbThreshold },
             { "silence_gate_atten", _silenceGateAtten },
             { "input_noise_reduce", _inputNoiseReduce },
@@ -3159,6 +5296,7 @@ public partial class MainWindow : Window
         {
             "model_path",
             "index_path",
+            "speaker_id",
             "f0method",
             "passthrough",
         };
@@ -3210,7 +5348,123 @@ public partial class MainWindow : Window
         _hasLatencyEstimate = false;
         _hasOutputSequence = false;
         _lastOutputSequence = 0;
+        Interlocked.Exchange(ref _lastLatencyUiUpdateNs, 0);
         _latencySamples.Clear();
+    }
+
+    private double GetAdaptivePacketDurationMs(double observedPacketMs = 0.0)
+    {
+        if (double.IsFinite(observedPacketMs) && observedPacketMs > 0.0)
+        {
+            return observedPacketMs;
+        }
+
+        double estimatedPacketMs = _jitterEstimator.PacketDurationMs;
+        if (estimatedPacketMs > 0.0)
+        {
+            return estimatedPacketMs;
+        }
+
+        if (_effectiveServerChunkMs > 0)
+        {
+            return _effectiveServerChunkMs;
+        }
+
+        return Math.Max(10.0, _serverStreamChunkMs);
+    }
+
+    private int GetEffectiveTargetBufferMs(double observedPacketMs = 0.0)
+    {
+        if (!_useAdaptiveBuffer)
+        {
+            return _targetBufferLatency;
+        }
+
+        int targetMs = _jitterEstimator.GetTargetBufferMs(
+            GetAdaptivePacketDurationMs(observedPacketMs),
+            AdaptiveSchedulerSlackMs);
+        RefreshAdaptiveBufferStatus(targetMs);
+        return targetMs;
+    }
+
+    private void RefreshAdaptiveBufferStatus(int targetMs, bool force = false)
+    {
+        long nowNs = GetMonoNs();
+        long previousNs = Interlocked.Read(ref _lastAdaptiveStatusUpdateNs);
+        if (!force && previousNs > 0 && nowNs - previousNs < AdaptiveStatusUpdateIntervalNs)
+        {
+            return;
+        }
+        Interlocked.Exchange(ref _lastAdaptiveStatusUpdateNs, nowNs);
+
+        double baseMs = _jitterEstimator.BaseTargetMs;
+        double protectionMs = _jitterEstimator.ProtectionMs;
+        double lateP95Ms = _jitterEstimator.LateQuantileMs;
+        double underrunMs = _jitterEstimator.UnderrunBoostMs;
+        string text = $"自动目标 {targetMs} ms · 设备/分包下限 {baseMs:F0} ms · 网络保护 {protectionMs:F0} ms · P95 {lateP95Ms:F0} ms · 欠载 {underrunMs:F0} ms";
+
+        void ApplyText()
+        {
+            if (AdaptiveBufferStatusText != null)
+            {
+                AdaptiveBufferStatusText.Text = text;
+            }
+        }
+
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            ApplyText();
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(ApplyText);
+        }
+    }
+
+    private bool ShouldHoldPlayback(int bufferedBytesBeforeRead, int requestedBytes)
+    {
+        if (!_useAdaptiveBuffer
+            || _bypassServerVoice
+            || !_isPlaying
+            || !_playbackStarted
+            || requestedBytes <= 0)
+        {
+            return false;
+        }
+
+        double bufferedMs = bufferedBytesBeforeRead * 1000.0 / (SampleRate * 4.0);
+        double requestedMs = requestedBytes * 1000.0 / (SampleRate * 4.0);
+        double packetMs = GetAdaptivePacketDurationMs();
+        int targetMs = GetEffectiveTargetBufferMs(packetMs);
+
+        if (Volatile.Read(ref _adaptiveRebuffering) != 0)
+        {
+            if (bufferedMs + 0.01 < targetMs)
+            {
+                return true;
+            }
+
+            if (Interlocked.Exchange(ref _adaptiveRebuffering, 0) != 0)
+            {
+                Dispatcher.UIThread.Post(() =>
+                    Log($"自动缓冲已恢复：{bufferedMs:F0}ms / 目标 {targetMs}ms"));
+            }
+            return false;
+        }
+
+        if (bufferedMs + 0.01 >= requestedMs)
+        {
+            return false;
+        }
+
+        double shortageMs = Math.Max(requestedMs - bufferedMs, targetMs - bufferedMs);
+        _jitterEstimator.ReportUnderrun(shortageMs, packetMs);
+        int raisedTargetMs = GetEffectiveTargetBufferMs(packetMs);
+        Interlocked.Exchange(ref _adaptiveRebuffering, 1);
+        int underrunCount = Interlocked.Increment(ref _adaptiveUnderrunCount);
+        Dispatcher.UIThread.Post(() =>
+            Log($"自动缓冲检测到欠载 #{underrunCount}：剩余 {bufferedMs:F0}ms，重缓冲至 {raisedTargetMs}ms"));
+        return true;
     }
 
     private async Task StartStreamingAsync()
@@ -3220,6 +5474,15 @@ public partial class MainWindow : Window
             return;
         }
 
+
+        if (!_bypassServerVoice && !_serverPassthroughVoice && !EnsureRequiredBaseModelSlotsConfigured())
+        {
+            return;
+        }
+        if (!_bypassServerVoice && !_serverConfigurationAccepted)
+        {
+            throw new InvalidOperationException("服务器尚未确认本次连接的参数配置，请稍候重试。");
+        }
         if (!_bypassServerVoice && !_serverPassthroughVoice && _modelState != ModelState.Ready)
         {
             throw new InvalidOperationException("模型尚未就绪，请先选择并等待模型加载完成。");
@@ -3231,6 +5494,8 @@ public partial class MainWindow : Window
         long sessionLong = Interlocked.Increment(ref _streamSessionId);
         ulong sessionId = unchecked((ulong)sessionLong);
         Interlocked.Exchange(ref _pendingLatencyReset, 0);
+        Interlocked.Exchange(ref _adaptiveRebuffering, 0);
+        Interlocked.Exchange(ref _adaptiveUnderrunCount, 0);
         ResetLatencyTracking();
 
         if (!_bypassServerVoice)
@@ -3242,10 +5507,14 @@ public partial class MainWindow : Window
         {
             BufferDuration = TimeSpan.FromMilliseconds(_bufferCapacityMs),
             DiscardOnBufferOverflow = true,
-            ReadFully = true,
+            ReadFully = false,
         };
         ResetWaveformHistory();
-        _playbackWaveProvider = new PlaybackTapWaveProvider(_waveProvider, _playbackTimestampSync, CapturePlaybackWaveform);
+        _playbackWaveProvider = new PlaybackTapWaveProvider(
+            _waveProvider,
+            _playbackTimestampSync,
+            ShouldHoldPlayback,
+            CapturePlaybackWaveform);
 
         var selectedOutput = OutputDeviceComboBox.SelectedItem as AudioDeviceItem;
         if (selectedOutput != null && !string.IsNullOrWhiteSpace(selectedOutput.Id))
@@ -3254,18 +5523,18 @@ public partial class MainWindow : Window
             {
                 using var enumerator = new MMDeviceEnumerator();
                 _outputDevice = enumerator.GetDevice(selectedOutput.Id);
-                _waveOut = new WasapiOut(_outputDevice, AudioClientShareMode.Shared, true, 30);
+                _waveOut = new WasapiOut(_outputDevice, AudioClientShareMode.Shared, true, AudioDeviceBufferMs);
             }
             catch
             {
                 _outputDevice?.Dispose();
                 _outputDevice = null;
-                _waveOut = new WasapiOut(AudioClientShareMode.Shared, 30);
+                _waveOut = new WasapiOut(AudioClientShareMode.Shared, AudioDeviceBufferMs);
             }
         }
         else
         {
-            _waveOut = new WasapiOut(AudioClientShareMode.Shared, 30);
+            _waveOut = new WasapiOut(AudioClientShareMode.Shared, AudioDeviceBufferMs);
         }
 
         _waveOut.PlaybackStopped += OnPlaybackStopped;
@@ -3294,7 +5563,7 @@ public partial class MainWindow : Window
 
         inputDevice ??= TryGetDefaultCapture(inputEnumerator, Role.Communications);
         inputDevice ??= TryGetDefaultCapture(inputEnumerator, Role.Multimedia);
-        _waveIn = inputDevice != null ? new WasapiCapture(inputDevice, true, 30) : new WasapiCapture();
+        _waveIn = inputDevice != null ? new WasapiCapture(inputDevice, true, AudioDeviceBufferMs) : new WasapiCapture();
         _waveIn.DataAvailable += OnAudioDataAvailable;
 
         var sourceFormat = _waveIn.WaveFormat;
@@ -3810,6 +6079,8 @@ public partial class MainWindow : Window
             _playbackWaveProvider = null;
             _waveProvider = null;
             _playbackStarted = false;
+            Interlocked.Exchange(ref _adaptiveRebuffering, 0);
+            Interlocked.Exchange(ref _adaptiveUnderrunCount, 0);
             UpdateStreamingUi(false);
             TotalLatencyTextBlock.Text = "-- ms";
             ServerQueueLatencyTextBlock.Text = "-- ms";
@@ -4118,6 +6389,7 @@ public partial class MainWindow : Window
             int audioLength = messageData.Length - audioOffset;
             if (audioLength <= 0) return;
 
+            double incomingMs = audioLength / 4.0 * 1000.0 / SampleRate;
             long arrivalNs = GetMonoNs();
             bool hasValidMediaTimestamp = _streamStartNs > 0
                 && header.TimestampNs >= (ulong)_streamStartNs
@@ -4129,50 +6401,71 @@ public partial class MainWindow : Window
             _lastOutputSequence = header.Sequence;
             _hasOutputSequence = true;
 
-            int effectiveTargetLatency = _useAdaptiveBuffer
-                ? _jitterEstimator.GetTargetBufferMs(10)
-                : _targetBufferLatency;
-
             if (discontinuity)
             {
                 TrimPlaybackBufferTo(0);
                 ResetLatencyTracking();
                 _lastOutputSequence = header.Sequence;
                 _hasOutputSequence = true;
-            }
-
-            double bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
-            double incomingMs = audioLength / 4.0 * 1000.0 / SampleRate;
-            double hardLimitMs = Math.Min(_maxBufferMs, Math.Max(0, _bufferCapacityMs - incomingMs));
-            if (bufferBeforeAddMs > hardLimitMs
-                || bufferBeforeAddMs + incomingMs > _bufferCapacityMs)
-            {
-                // Always make room by dropping the oldest media before the provider
-                // can overflow and reject the newest realtime block.
-                int trimTargetMs = Math.Min(effectiveTargetLatency, Math.Max(0, _bufferCapacityMs / 2));
-                TrimPlaybackBufferTo(trimTargetMs);
-                bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+                if (_useAdaptiveBuffer && _playbackStarted)
+                {
+                    Interlocked.Exchange(ref _adaptiveRebuffering, 1);
+                    Dispatcher.UIThread.Post(() => Log("检测到音频时间线中断，自动重新蓄水。"));
+                }
             }
 
             if (hasValidMediaTimestamp)
             {
                 if (Interlocked.Exchange(ref _pendingLatencyReset, 0) != 0)
                     ResetLatencyTracking();
-                _jitterEstimator.Update((long)header.TimestampNs, arrivalNs);
-                effectiveTargetLatency = _useAdaptiveBuffer
-                    ? _jitterEstimator.GetTargetBufferMs(10)
-                    : _targetBufferLatency;
+                _jitterEstimator.Update((long)header.TimestampNs, arrivalNs, incomingMs);
             }
 
-            if (bufferBeforeAddMs > effectiveTargetLatency + _silenceDropOffset
-                && CalculateRms(messageData, audioOffset, audioLength) < _silenceThreshold)
+            int effectiveTargetLatency = GetEffectiveTargetBufferMs(hasValidMediaTimestamp ? 0.0 : incomingMs);
+            double bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+            double hardLimitMs = Math.Min(_maxBufferMs, Math.Max(0, _bufferCapacityMs - incomingMs));
+            if (bufferBeforeAddMs > hardLimitMs
+                || bufferBeforeAddMs + incomingMs > _bufferCapacityMs)
             {
+                // Always make room for the newest real-time packet. This remains
+                // a last-resort bound; normal automatic correction happens only
+                // by shortening silent excess below.
+                int trimTargetMs = Math.Min(effectiveTargetLatency, Math.Max(0, _bufferCapacityMs / 2));
+                TrimPlaybackBufferTo(trimTargetMs);
+                bufferBeforeAddMs = _waveProvider.BufferedDuration.TotalMilliseconds;
+            }
+
+            bool isSilent = CalculateRms(messageData, audioOffset, audioLength) < _silenceThreshold;
+            int bytesToAdd = audioLength;
+            if (_useAdaptiveBuffer && isSilent)
+            {
+                // The post-arrival high watermark includes one packet because a
+                // paced stream naturally has a saw-tooth occupancy. Shorten only
+                // the exact silent excess; dropping an entire inference block was
+                // the source of periodic 250 ms buffer collapses.
+                double highWatermarkMs = effectiveTargetLatency + incomingMs + _silenceDropOffset;
+                double excessMs = bufferBeforeAddMs + incomingMs - highWatermarkMs;
+                if (excessMs > 0.0)
+                {
+                    int bytesToDrop = (int)Math.Floor(excessMs * SampleRate * 4.0 / 1000.0);
+                    bytesToDrop -= bytesToDrop % 4;
+                    bytesToAdd = Math.Max(0, audioLength - bytesToDrop);
+                }
+            }
+            else if (!_useAdaptiveBuffer
+                && bufferBeforeAddMs > effectiveTargetLatency + _silenceDropOffset
+                && isSilent)
+            {
+                // Preserve the manual mode's existing fixed-buffer behavior.
                 return;
             }
 
-            AddPlaybackSamples(
-                messageData, audioOffset, audioLength,
-                hasValidMediaTimestamp ? (long)header.TimestampNs : 0);
+            if (bytesToAdd > 0)
+            {
+                AddPlaybackSamples(
+                    messageData, audioOffset, bytesToAdd,
+                    hasValidMediaTimestamp ? (long)header.TimestampNs : 0);
+            }
 
             if (!_playbackStarted && _waveOut != null && _waveProvider.BufferedBytes > 0)
             {
@@ -4181,7 +6474,7 @@ public partial class MainWindow : Window
                 {
                     _waveOut.Play();
                     _playbackStarted = true;
-                    Log($"缓冲达到 {_waveProvider.BufferedDuration.TotalMilliseconds:F0}ms，开始播放");
+                    Log($"缓冲达到 {_waveProvider.BufferedDuration.TotalMilliseconds:F0}ms，开始播放（目标 {effectiveTargetLatency}ms）");
                 }
             }
 
@@ -4216,12 +6509,20 @@ public partial class MainWindow : Window
                 while (_latencySamples.Count > 0 && _latencySamples[0].TsNs < cutoff)
                     _latencySamples.RemoveAt(0);
 
-                Dispatcher.UIThread.Post(() =>
+                long lastUiUpdateNs = Interlocked.Read(ref _lastLatencyUiUpdateNs);
+                if (lastUiUpdateNs <= 0 || arrivalNs - lastUiUpdateNs >= LatencyUiUpdateIntervalNs)
                 {
-                    TotalLatencyTextBlock.Text = $"{_emaTotalLatencyMs:F0} ms";
-                    ServerQueueLatencyTextBlock.Text = $"{_emaServerQueueLatencyMs:F0} ms";
-                    InferenceLatencyTextBlock.Text = $"{_emaInferLatencyMs:F0} ms";
-                });
+                    Interlocked.Exchange(ref _lastLatencyUiUpdateNs, arrivalNs);
+                    double totalLatencyMs = _emaTotalLatencyMs;
+                    double serverQueueLatencyMs = _emaServerQueueLatencyMs;
+                    double inferLatencyMs = _emaInferLatencyMs;
+                    Dispatcher.UIThread.Post(() =>
+                    {
+                        TotalLatencyTextBlock.Text = $"{totalLatencyMs:F0} ms";
+                        ServerQueueLatencyTextBlock.Text = $"{serverQueueLatencyMs:F0} ms";
+                        InferenceLatencyTextBlock.Text = $"{inferLatencyMs:F0} ms";
+                    });
+                }
             }
         }
         catch (Exception ex)
@@ -4229,7 +6530,6 @@ public partial class MainWindow : Window
             Dispatcher.UIThread.Post(() => Log($"解析二进制音频消息失败: {ex.Message}"));
         }
     }
-
     private static MMDevice? TryGetDefaultCapture(MMDeviceEnumerator enumerator, Role role)
     {
         try

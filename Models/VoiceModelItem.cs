@@ -14,11 +14,14 @@ public sealed class VoiceModelItem : INotifyPropertyChanged
     private string _name = string.Empty;
     private string _pth = string.Empty;
     private string _index = string.Empty;
+    private int _speakerId;
     private bool _isActive;
     private IBrush _statusBrush = Brushes.Gray;
     private string _statusHint = "未加载到显存";
     private bool _showStatusDot = true;
     private bool _isUserSelected;
+    private bool _isLoaded;
+    private bool _isLoading;
 
     public string Id
     {
@@ -115,6 +118,37 @@ public sealed class VoiceModelItem : INotifyPropertyChanged
         }
     }
 
+    public bool IsLoaded
+    {
+        get => _isLoaded;
+        set
+        {
+            _isLoaded = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public int SpeakerId
+    {
+        get => _speakerId;
+        set
+        {
+            _speakerId = Math.Max(0, value);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DetailText));
+        }
+    }
+
+    public bool IsLoading
+    {
+        get => _isLoading;
+        set
+        {
+            _isLoading = value;
+            OnPropertyChanged();
+        }
+    }
+
     public string DetailText
     {
         get
@@ -130,7 +164,8 @@ public sealed class VoiceModelItem : INotifyPropertyChanged
             }
 
             var indexText = string.IsNullOrWhiteSpace(Index) ? "index: (无)" : $"index: {Index}";
-            return $"pth: {Pth}    {indexText}".Trim();
+            var speakerText = SpeakerId > 0 ? $"    speaker: {SpeakerId}" : string.Empty;
+            return $"pth: {Pth}    {indexText}{speakerText}".Trim();
         }
     }
 

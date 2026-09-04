@@ -1,13 +1,14 @@
 using System.Diagnostics;
 using System.Text;
 using Avalonia;
+using ClientAvalonia.Services;
 
 namespace ClientAvalonia;
 
 internal static class Program
 {
-    private static readonly string StartupErrorLogPath = Path.Combine(AppContext.BaseDirectory, "startup-error.log");
-    internal static readonly string StartupTraceLogPath = Path.Combine(AppContext.BaseDirectory, "startup-trace.log");
+    private static readonly string StartupErrorLogPath = Path.Combine(AppPaths.LogsDirectory, "startup-error.log");
+    internal static readonly string StartupTraceLogPath = Path.Combine(AppPaths.LogsDirectory, "startup-trace.log");
 
     [STAThread]
     public static void Main(string[] args)

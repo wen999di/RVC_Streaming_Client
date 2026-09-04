@@ -1,4 +1,4 @@
-﻿<Window xmlns="https://github.com/avaloniaui"
+<Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -15,7 +15,7 @@
         Background="Transparent"
         WindowDecorations="Full"
         ExtendClientAreaToDecorationsHint="True"
-        ExtendClientAreaTitleBarHeightHint="44"
+        ExtendClientAreaTitleBarHeightHint="58"
         CanMaximize="True"
         TransparencyLevelHint="Mica"
         mc:Ignorable="d">
@@ -42,6 +42,12 @@
     <Style Selector="WindowDrawnDecorations /template/ Panel#PART_UnderlayWrapper">
       <Setter Property="IsVisible" Value="False" />
     </Style>
+    <Style Selector="StackPanel.local-environment.ready mi|MaterialIcon">
+      <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+    </Style>
+    <Style Selector="StackPanel.local-environment.ready TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource AccentTextBrush}" />
+    </Style>
   </Window.Styles>
 
   <Grid>
@@ -63,19 +69,19 @@
       <Grid>
         <Ellipse Width="520"
                  Height="520"
-                 Fill="{local:Oklch L=0.91, C=0.025, H=171, A=0.10}"
+                 Fill="{local:Oklch L=0.93, C=0.020, H=171, A=0.055}"
                  HorizontalAlignment="Right"
                  VerticalAlignment="Top"
                  Margin="0,-160,-120,0" />
         <Ellipse Width="380"
                  Height="380"
-                 Fill="{local:Oklch L=0.92, C=0.018, H=82, A=0.11}"
+                 Fill="{local:Oklch L=0.94, C=0.014, H=82, A=0.050}"
                  HorizontalAlignment="Left"
                  VerticalAlignment="Bottom"
                  Margin="-80,0,0,-160" />
 
         <!-- Custom Title Bar -->
-        <Grid Height="44" VerticalAlignment="Top" ZIndex="10">
+        <Grid Height="58" VerticalAlignment="Top" ZIndex="10">
           <!-- Drag region -->
           <Border Background="Transparent"
                   PointerPressed="TitleBar_PointerPressed" />
@@ -121,59 +127,27 @@
                   VerticalAlignment="Bottom" />
         </Grid>
 
-        <Grid Margin="22,66,22,22" ColumnDefinitions="1.68*,1.0*" ColumnSpacing="18">
+        <Grid x:Name="MainContentGrid" Margin="24,66,24,18" ColumnSpacing="30">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.86*" />
+            <ColumnDefinition Width="1.0*" />
+          </Grid.ColumnDefinitions>
 
           <!-- ===== LEFT COLUMN ===== -->
-          <Grid Grid.Column="0" RowDefinitions="Auto,*" RowSpacing="16">
+          <Grid Grid.Column="0" RowDefinitions="*">
 
-            <!-- Connection card: independent from the main workspace, matching scheme C -->
-            <Border x:Name="ConnectionGatePanel"
-                    Grid.Row="0"
-                    Classes="connection-card animated-panel"
-                    Padding="18,14">
-              <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
-                <StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
-                  <Border Classes="section-icon">
-                    <mi:MaterialIcon Classes="section-icon-glyph" Kind="LinkBoxVariantOutline" />
-                  </Border>
-                  <TextBlock Text="连接"
-                             FontSize="14"
-                             FontWeight="SemiBold"
-                             Foreground="{StaticResource TextStrongBrush}"
-                             VerticalAlignment="Center" />
-                </StackPanel>
-                <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
-                  <TextBox x:Name="ServerUriTextBox"
-                           PlaceholderText="ws://127.0.0.1:8765/"
-                           Text=""
-                           FontSize="14"
-                           Padding="13,9"
-                           CornerRadius="9"
-                           VerticalAlignment="Center" />
-                  <Button x:Name="ConnectionToggleButton"
-                          Grid.Column="1"
-                          Classes="primary-action"
-                          Width="92"
-                          Height="40"
-                          VerticalAlignment="Center"
-                          Click="ConnectionToggleButton_OnClick"
-                          Content="连接" />
-                </Grid>
-              </Grid>
-            </Border>
-
-            <!-- Main workspace card -->
-            <Border Grid.Row="1" Classes="workspace-card" Padding="0">
+            <!-- Main workspace -->
+            <Border Grid.Row="0" Classes="workspace-shell" Padding="0">
               <Grid RowDefinitions="Auto,*">
 
         <!-- Main Tabs Header -->
               <Grid x:Name="MainTabsHeaderGrid"
                     Grid.Row="0"
                     RowDefinitions="Auto,2"
-                    ColumnDefinitions="1*,1*,1*,1.8*"
+                    ColumnDefinitions="1*,1*,1*,1*"
                     RowSpacing="6"
                     ColumnSpacing="4"
-                    Margin="12,10,12,2">
+                    Margin="0,4,0,2">
     <Button x:Name="MainTabHeaderBtn0"
       Grid.Row="0"
       HorizontalAlignment="Stretch"
@@ -195,8 +169,16 @@
       HorizontalAlignment="Stretch"
       Grid.Column="2"
       Classes="main-tab-header"
-      Content="日志"
+      Content="训练"
       Tag="2"
+      Click="MainTabHeaderButton_OnClick" />
+    <Button x:Name="MainTabHeaderBtn3"
+      Grid.Row="0"
+      HorizontalAlignment="Stretch"
+      Grid.Column="3"
+      Classes="main-tab-header"
+      Content="日志"
+      Tag="3"
       Click="MainTabHeaderButton_OnClick" />
     <Border Grid.Row="1"
       Grid.ColumnSpan="4"
@@ -214,13 +196,19 @@
         </Grid>
 
         <!-- Main Tabs -->
-        <TabControl x:Name="MainTabControl" Grid.Row="1" Classes="main-tabs" Margin="12,0,12,12">
+        <TabControl x:Name="MainTabControl"
+                    Grid.Row="1"
+                    Classes="main-tabs"
+                    Margin="0"
+                    HorizontalContentAlignment="Stretch"
+                    VerticalContentAlignment="Stretch">
 
                 <!-- ===== TAB 0: 实时变声 ===== -->
                 <TabItem Header="实时变声" Classes="main-tab">
-                  <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
-                                Padding="0,0,16,0">
-                    <StackPanel Spacing="16">
+                  <Grid>
+                    <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
+                                  Padding="0,0,16,28">
+                      <StackPanel Spacing="16">
 
                       <!-- Voice Model Selection (chips) -->
                       <Border Classes="section-card" Padding="16">
@@ -273,7 +261,7 @@
                         <Border Classes="section-card" Padding="14">
                           <Grid ColumnDefinitions="1*,1*,1*" ColumnSpacing="18">
                             <StackPanel Spacing="4">
-                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                   <mi:MaterialIcon Kind="MusicNote" Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
                                   <TextBlock Text="音调调整" FontWeight="SemiBold" />
@@ -282,12 +270,11 @@
                                            DoubleTapped="SliderValueText_DoubleTapped" Tag="F0UpKeySlider" Cursor="Hand" />
                                 <TextBox x:Name="F0UpKeyValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                          KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="F0UpKeySlider" />
-                                  <TextBlock x:Name="F0UpKeyUnitLabel" Grid.Column="2" Text=" 半音" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
                               </Grid>
                               <Slider x:Name="F0UpKeySlider" Minimum="-12" Maximum="12" TickFrequency="1" ValueChanged="F0UpKeySlider_OnValueChanged" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Spacing="4">
-                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                   <mi:MaterialIcon Kind="Equalizer" Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
                                   <TextBlock Text="索引比率" FontWeight="SemiBold" />
@@ -300,7 +287,7 @@
                               <Slider x:Name="IndexRateSlider" Minimum="0" Maximum="1" TickFrequency="0.05" ValueChanged="IndexRateSlider_OnValueChanged" />
                             </StackPanel>
                             <StackPanel Grid.Column="2" Spacing="4">
-                                <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,2">
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                   <mi:MaterialIcon Kind="Waveform" Width="16" Height="16" Foreground="{StaticResource AccentBrush}" />
                                   <TextBlock Text="共振峰偏移" FontWeight="SemiBold" />
@@ -338,51 +325,51 @@
                                   ColumnSpacing="18"
                                   RowSpacing="10">
                               <StackPanel Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="分块时间" />
                                   <TextBlock x:Name="BlockTimeValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="BlockTimeSlider" Cursor="Hand" />
                                   <TextBox x:Name="BlockTimeValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="BlockTimeSlider" />
-                                    <TextBlock x:Name="BlockTimeUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="BlockTimeUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                   </Grid>
                                   <Slider x:Name="BlockTimeSlider" Minimum="80" Maximum="1000" TickFrequency="10" ValueChanged="BlockTimeSlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Column="1" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="交叉淡入淡出" />
                                   <TextBlock x:Name="CrossfadeValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="CrossfadeSlider" Cursor="Hand" />
                                   <TextBox x:Name="CrossfadeValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="CrossfadeSlider" />
-                                    <TextBlock x:Name="CrossfadeUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="CrossfadeUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="CrossfadeSlider" Minimum="10" Maximum="40" TickFrequency="5" ValueChanged="CrossfadeSlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Column="2" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="额外推理时间" />
                                   <TextBlock x:Name="ExtraTimeValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="ExtraTimeSlider" Cursor="Hand" />
                                   <TextBox x:Name="ExtraTimeValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="ExtraTimeSlider" />
-                                    <TextBlock x:Name="ExtraTimeUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="ExtraTimeUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="ExtraTimeSlider" Minimum="200" Maximum="4000" TickFrequency="50" ValueChanged="ExtraTimeSlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Row="1" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="静音阈值" />
                                   <TextBlock x:Name="SilenceDbValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="SilenceDbSlider" Cursor="Hand" />
                                   <TextBox x:Name="SilenceDbValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="SilenceDbSlider" />
-                                    <TextBlock x:Name="SilenceDbUnitLabel" Grid.Column="2" Text=" dB" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="SilenceDbUnitLabel" Grid.Column="2" Text=" dB" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="SilenceDbSlider" Minimum="-90" Maximum="-20" TickFrequency="1" ValueChanged="SilenceDbSlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="静音门衰减" />
                                   <TextBlock x:Name="SilenceGateAttenValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="SilenceGateAttenSlider" Cursor="Hand" />
@@ -420,7 +407,7 @@
                                 </Grid>
                               </StackPanel>
                               <StackPanel Grid.Row="2" Grid.Column="1" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="降噪强度" />
                                   <TextBlock x:Name="NoiseReduceStrengthValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="NoiseReduceStrengthSlider" Cursor="Hand" />
@@ -430,7 +417,7 @@
                                 <Slider x:Name="NoiseReduceStrengthSlider" Minimum="0" Maximum="1" TickFrequency="0.05" ValueChanged="NoiseReduceStrengthSlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Row="2" Grid.Column="2" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="RMS 混合比率" />
                                   <TextBlock x:Name="RmsMixRateValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="RmsMixRateSlider" Cursor="Hand" />
@@ -482,7 +469,7 @@
                             <StackPanel x:Name="AutoBufferPanel" Classes="animated-panel" Spacing="10">
                               <Grid ColumnDefinitions="1*,1*,1*,1*" RowDefinitions="Auto" ColumnSpacing="14" RowSpacing="10">
                                 <StackPanel Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto">
                                     <TextBlock Text="抖动系数" />
                                     <TextBlock x:Name="JitterFactorValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                                DoubleTapped="SliderValueText_DoubleTapped" Tag="JitterFactorSlider" Cursor="Hand" />
@@ -492,8 +479,8 @@
                                   <Slider x:Name="JitterFactorSlider" Minimum="1" Maximum="5" TickFrequency="0.1" ValueChanged="JitterFactorSlider_OnValueChanged" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto">
-                                    <TextBlock Text="抖动平滑 Alpha" />
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto">
+                                    <TextBlock Text="目标回落平滑 Alpha" />
                                     <TextBlock x:Name="JitterAlphaValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                                DoubleTapped="SliderValueText_DoubleTapped" Tag="JitterAlphaSlider" Cursor="Hand" />
                                     <TextBox x:Name="JitterAlphaValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
@@ -502,89 +489,94 @@
                                   <Slider x:Name="JitterAlphaSlider" Minimum="0.80" Maximum="0.99" TickFrequency="0.01" ValueChanged="JitterAlphaSlider_OnValueChanged" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="2" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                     <TextBlock Text="自适应最大缓冲" />
                                     <TextBlock x:Name="JitterMaxBufferValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                                DoubleTapped="SliderValueText_DoubleTapped" Tag="JitterMaxBufferSlider" Cursor="Hand" />
                                     <TextBox x:Name="JitterMaxBufferValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                              KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="JitterMaxBufferSlider" />
-                                    <TextBlock x:Name="JitterMaxBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="JitterMaxBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                   </Grid>
                                   <Slider x:Name="JitterMaxBufferSlider" Minimum="20" Maximum="500" TickFrequency="5" ValueChanged="JitterMaxBufferSlider_OnValueChanged" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="3" Spacing="3">
-                                  <Grid ColumnDefinitions="*,Auto,Auto">
-                                    <TextBlock Text="最小保护缓冲" />
+                                  <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
+                                    <TextBlock Text="最小网络保护" />
                                     <TextBlock x:Name="MinBufferValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                                DoubleTapped="SliderValueText_DoubleTapped" Tag="MinBufferSlider" Cursor="Hand" />
                                     <TextBox x:Name="MinBufferValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                              KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="MinBufferSlider" />
-                                    <TextBlock x:Name="MinBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock x:Name="MinBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                   </Grid>
-                                  <Slider x:Name="MinBufferSlider" Minimum="10" Maximum="120" TickFrequency="5" ValueChanged="MinBufferSlider_OnValueChanged" />
+                                  <Slider x:Name="MinBufferSlider" Minimum="0" Maximum="120" TickFrequency="5" ValueChanged="MinBufferSlider_OnValueChanged" />
                                 </StackPanel>
                               </Grid>
+                              <TextBlock x:Name="AdaptiveBufferStatusText"
+                                         Text="自动目标 -- ms · 设备/分包下限 -- ms · 网络保护 -- ms · P95 -- ms · 欠载 -- ms"
+                                         FontSize="12"
+                                         Foreground="{StaticResource TextMutedBrush}"
+                                         TextWrapping="Wrap" />
                             </StackPanel>
 
                             <StackPanel x:Name="ManualBufferPanel" Classes="animated-panel collapsed" Spacing="10">
                               <StackPanel Spacing="3">
-                                <Grid ColumnDefinitions="*,Auto,Auto">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="目标缓冲延迟" />
                                   <TextBlock x:Name="TargetBufferValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="TargetBufferSlider" Cursor="Hand" />
                                   <TextBox x:Name="TargetBufferValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="TargetBufferSlider" />
-                                  <TextBlock x:Name="TargetBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                  <TextBlock x:Name="TargetBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="TargetBufferSlider" Minimum="20" Maximum="500" TickFrequency="10" ValueChanged="TargetBufferSlider_OnValueChanged" />
                               </StackPanel>
                               <Border x:Name="TargetBufferErrorPanel" Classes="inline-error collapsed">
-                                <TextBlock Text="Block Time 不能大于目标缓冲。" Foreground="{StaticResource DangerBrush}" FontWeight="SemiBold" />
+                                <TextBlock Text="服务器发送切片不能大于目标缓冲。" Foreground="{StaticResource DangerBrush}" FontWeight="SemiBold" />
                               </Border>
                             </StackPanel>
 
                             <Grid ColumnDefinitions="1*,1*,1*" RowDefinitions="Auto,Auto" ColumnSpacing="14" RowSpacing="10">
                               <StackPanel Spacing="3">
-                                <Grid ColumnDefinitions="*,Auto,Auto">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="最大丢弃阈值" />
                                   <TextBlock x:Name="MaxBufferValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="MaxBufferSlider" Cursor="Hand" />
                                   <TextBox x:Name="MaxBufferValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="MaxBufferSlider" />
-                                  <TextBlock x:Name="MaxBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                  <TextBlock x:Name="MaxBufferUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="MaxBufferSlider" Minimum="100" Maximum="3000" TickFrequency="50" ValueChanged="MaxBufferSlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Column="1" Spacing="3">
-                                <Grid ColumnDefinitions="*,Auto,Auto">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="播放缓冲容量" />
                                   <TextBlock x:Name="BufferCapacityValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="BufferCapacitySlider" Cursor="Hand" />
                                   <TextBox x:Name="BufferCapacityValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="BufferCapacitySlider" />
-                                  <TextBlock x:Name="BufferCapacityUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                  <TextBlock x:Name="BufferCapacityUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="BufferCapacitySlider" Minimum="1000" Maximum="8000" TickFrequency="100" ValueChanged="BufferCapacitySlider_OnValueChanged" />
                               </StackPanel>
                               <StackPanel Grid.Column="2" Spacing="3">
-                                <Grid ColumnDefinitions="*,Auto,Auto">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
                                   <TextBlock Text="客户端发送切片" />
                                   <TextBlock x:Name="NetworkSliceValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="NetworkSliceSlider" Cursor="Hand" />
                                   <TextBox x:Name="NetworkSliceValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="NetworkSliceSlider" />
-                                  <TextBlock x:Name="NetworkSliceUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                  <TextBlock x:Name="NetworkSliceUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="NetworkSliceSlider" Minimum="10" Maximum="120" TickFrequency="5" ValueChanged="NetworkSliceSlider_OnValueChanged" />
                               </StackPanel>
-                              <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3" IsVisible="False">
-                                <Grid ColumnDefinitions="*,Auto,Auto">
-                                  <TextBlock Text="服务器发送切片（协议 v1）" />
+                              <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3">
+                                <Grid Classes="slider-value-row" ColumnDefinitions="*,Auto,Auto">
+                                  <TextBlock Text="服务器发送切片" />
                                   <TextBlock x:Name="ServerStreamChunkValueText" Grid.Column="1" Classes="slider-value" Text="--"
                                              DoubleTapped="SliderValueText_DoubleTapped" Tag="ServerStreamChunkSlider" Cursor="Hand" />
                                   <TextBox x:Name="ServerStreamChunkValueEdit" Grid.Column="1" Classes="slider-value-edit" IsVisible="False"
                                            KeyDown="SliderValueEdit_KeyDown" LostFocus="SliderValueEdit_LostFocus" Tag="ServerStreamChunkSlider" />
-                                  <TextBlock x:Name="ServerStreamChunkUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" IsVisible="False" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" />
+                                  <TextBlock x:Name="ServerStreamChunkUnitLabel" Grid.Column="2" Text=" ms" Margin="2,0,0,0" Foreground="{StaticResource AccentBrush}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
                                 </Grid>
                                 <Slider x:Name="ServerStreamChunkSlider" Minimum="10" Maximum="120" TickFrequency="5" ValueChanged="ServerStreamChunkSlider_OnValueChanged" />
                               </StackPanel>
@@ -593,36 +585,62 @@
                         </StackPanel>
                       </Border>
 
-                    </StackPanel>
-                  </ScrollViewer>
+                      </StackPanel>
+                    </ScrollViewer>
+                    <Border Height="26"
+                            VerticalAlignment="Bottom"
+                            IsHitTestVisible="False">
+                      <Border.Background>
+                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                          <GradientStop Color="#00F8F7F2" Offset="0" />
+                          <GradientStop Color="#FFF8F7F2" Offset="1" />
+                        </LinearGradientBrush>
+                      </Border.Background>
+                    </Border>
+                  </Grid>
                 </TabItem>
 
                 <!-- ===== TAB 1: 模型与文件 ===== -->
                 <TabItem Header="模型与文件" Classes="main-tab">
-                  <Grid ColumnDefinitions="1.0*,1.8*" ColumnSpacing="18">
+                  <Grid ColumnDefinitions="1.04*,1.8*" ColumnSpacing="22" Margin="0,8,0,20">
                     <!-- ===== LEFT: Voice Models + Slot Bindings ===== -->
-                    <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
-                                  Padding="0,0,16,0">
-                      <StackPanel Spacing="14">
+                    <Border Classes="models-sidebar-frame">
+                      <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
+                                    Padding="16,10,12,12">
+                        <StackPanel Spacing="0">
 
                         <!-- Voice Model Management -->
                         <Border x:Name="VoiceModelsDropZoneBorder"
-                                Classes="section-card" Padding="14"
+                                Classes="model-sidebar-section" Padding="0,0,0,12"
                                 DragDrop.AllowDrop="True"
                                 DragDrop.DragOver="VoiceModels_DragOver"
                                 DragDrop.Drop="VoiceModels_Drop"
                                 DragDrop.DragLeave="VoiceModels_DragLeave">
                           <StackPanel Spacing="10">
-                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="6">
+                            <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
                               <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
                                       CornerRadius="2" VerticalAlignment="Center" />
-                              <TextBlock Grid.Column="1"
-                                         Text="音色模型"
+                               <TextBlock Grid.Column="1"
+                                          Text="音色模型"
                                          FontSize="14"
                                          FontWeight="SemiBold"
-                                         Foreground="{StaticResource AccentTextBrush}"
+                                          Foreground="{StaticResource TextStrongBrush}"
                                          VerticalAlignment="Center" />
-                              <Button Grid.Column="2" x:Name="AddVoiceModelButton" Classes="primary-action" Content="添加" Click="AddVoiceModel_OnClick" />
+                              <Button Grid.Column="2" x:Name="AddVoiceModelButton" Classes="primary-action" Content="添加" Click="AddVoiceModel_OnClick" IsEnabled="False" />
+                              <Border Grid.Column="3"
+                                      Width="22"
+                                      Height="22"
+                                      CornerRadius="11"
+                                      BorderBrush="{StaticResource BorderSoftBrush}"
+                                      BorderThickness="1"
+                                      ToolTip.Tip="拖入 .pth 与可选的 .index 文件，或点击添加">
+                                <TextBlock Text="?"
+                                           FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center" />
+                              </Border>
                             </Grid>
 
                             <!-- Inline Add Card (hidden by default) -->
@@ -667,26 +685,35 @@
                                 </Border>
                                 <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
                                   <Button Grid.Column="0" Classes="secondary-action" Content="取消" Click="InlineCancelVoiceModel_OnClick" />
-                                  <Button Grid.Column="2" Classes="primary-action" Content="确认" Click="InlineConfirmVoiceModel_OnClick" />
+                                  <Button x:Name="InlineConfirmVoiceModelButton" Grid.Column="2" Classes="primary-action" Content="确认" Click="InlineConfirmVoiceModel_OnClick" IsEnabled="False" />
                                 </Grid>
                               </StackPanel>
                             </Border>
 
-                            <ListBox x:Name="VoiceModelManagementListBox"
-                                     Padding="0,0,10,0"
-                                     MaxHeight="180"
-                                     SelectionChanged="VoiceModelManagementListBox_OnSelectionChanged">
+                            <Border Classes="voice-model-drop-surface">
+                              <ListBox x:Name="VoiceModelManagementListBox"
+                                       Padding="0"
+                                       MaxHeight="180"
+                                       SelectionChanged="VoiceModelManagementListBox_OnSelectionChanged">
                               <ListBox.ItemTemplate>
                                 <DataTemplate DataType="model:VoiceModelItem">
-                                  <Border Classes="item-card" Margin="0,0,0,6" Padding="0">
+                                  <Border Classes="item-card voice-model-card"
+                                          Classes.active="{Binding IsActive}"
+                                          Margin="0,0,0,8"
+                                          Padding="0">
                                     <Border.ContextMenu>
-                                      <ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed">
                                         <MenuItem Header="移除" Click="RemoveVoiceModel_OnContextMenuClick" />
                                       </ContextMenu>
                                     </Border.ContextMenu>
-                                    <Grid ColumnDefinitions="4,*">
-                                      <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
-                                      <StackPanel Grid.Column="1" Spacing="3" Margin="9,8,12,8">
+                                    <Grid ColumnDefinitions="4,*,Auto">
+                                      <Border Classes="left-accent-bar"
+                                              Classes.active="{Binding IsActive}"
+                                              CornerRadius="8,0,0,8" />
+                                      <StackPanel Grid.Column="1" Spacing="3" Margin="11,9,4,9">
                                         <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
                                           <Ellipse Width="8"
                                                    Height="8"
@@ -704,26 +731,34 @@
                                         </Grid>
                                         <TextBlock Text="{Binding DetailText}" Classes="muted" TextWrapping="Wrap" FontSize="11" />
                                       </StackPanel>
+                                      <mi:MaterialIcon Grid.Column="2"
+                                                       Kind="DotsVertical"
+                                                       Width="17"
+                                                       Height="17"
+                                                       Margin="4,0,10,0"
+                                                       Foreground="{StaticResource TextMutedBrush}"
+                                                       VerticalAlignment="Center" />
                                     </Grid>
                                   </Border>
                                 </DataTemplate>
                               </ListBox.ItemTemplate>
                             </ListBox>
+                            </Border>
                           </StackPanel>
                         </Border>
 
                         <!-- Hubert Slot -->
-                        <Border x:Name="HubertSlotBorder" Classes="section-card" Padding="14" Tag="hubert_base"
+                        <Border x:Name="HubertSlotBorder" Classes="model-sidebar-section" Padding="0,12" Tag="hubert_base"
                                 DragDrop.AllowDrop="True">
                           <StackPanel Spacing="8">
                             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
                               <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
                                       CornerRadius="2" VerticalAlignment="Center" />
-                              <TextBlock Grid.Column="1"
-                                         Text="Hubert Base"
+                               <TextBlock Grid.Column="1"
+                                          Text="Hubert Base"
                                          FontSize="14"
                                          FontWeight="SemiBold"
-                                         Foreground="{StaticResource AccentTextBrush}"
+                                          Foreground="{StaticResource TextStrongBrush}"
                                          VerticalAlignment="Center" />
                             </Grid>
                             <ListBox x:Name="HubertSlotListBox"
@@ -733,38 +768,50 @@
                                 <DataTemplate DataType="model:SlotBindingItem">
                                   <Border Classes="item-card" Margin="0,0,0,4" Padding="0">
                                     <Border.ContextMenu>
-                                      <ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed">
                                         <MenuItem Header="移除" Click="SlotItem_OnContextMenuRemoveClick" />
                                       </ContextMenu>
                                     </Border.ContextMenu>
                                     <Grid ColumnDefinitions="4,*">
                                       <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
-                                      <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
-                                        <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}"
-                                                 VerticalAlignment="Center" ToolTip.Tip="{Binding StatusHint}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
-                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                      </Grid>
-                                    </Grid>
+                                       <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
+                                         <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}"
+                                                  VerticalAlignment="Center" ToolTip.Tip="{Binding StatusHint}" />
+                                         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
+                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                       </Grid>
+                                     </Grid>
                                   </Border>
                                 </DataTemplate>
                               </ListBox.ItemTemplate>
                             </ListBox>
+                            <Grid x:Name="HubertSlotPlaceholder" Classes="slot-drop-placeholder" Height="42">
+                              <Border Classes="slot-drop-surface" CornerRadius="8" />
+                              <Rectangle Classes="slot-drop-outline" StrokeThickness="1"
+                                         StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
+                              <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <mi:MaterialIcon Kind="CloudUploadOutline" Width="16" Height="16" Foreground="{StaticResource TextMutedBrush}" />
+                                <TextBlock Text="拖入文件绑定" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+                              </StackPanel>
+                            </Grid>
                           </StackPanel>
                         </Border>
 
                         <!-- RMVPE Slot -->
-                        <Border x:Name="RmvpeSlotBorder" Classes="section-card" Padding="14" Tag="rmvpe"
+                        <Border x:Name="RmvpeSlotBorder" Classes="model-sidebar-section" Padding="0,12" Tag="rmvpe"
                                 DragDrop.AllowDrop="True">
                           <StackPanel Spacing="8">
                             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
                               <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
                                       CornerRadius="2" VerticalAlignment="Center" />
-                              <TextBlock Grid.Column="1"
-                                         Text="RMVPE"
+                               <TextBlock Grid.Column="1"
+                                          Text="RMVPE"
                                          FontSize="14"
                                          FontWeight="SemiBold"
-                                         Foreground="{StaticResource AccentTextBrush}"
+                                          Foreground="{StaticResource TextStrongBrush}"
                                          VerticalAlignment="Center" />
                             </Grid>
                             <ListBox x:Name="RmvpeSlotListBox"
@@ -774,47 +821,306 @@
                                 <DataTemplate DataType="model:SlotBindingItem">
                                   <Border Classes="item-card" Margin="0,0,0,4" Padding="0">
                                     <Border.ContextMenu>
-                                      <ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed">
                                         <MenuItem Header="移除" Click="SlotItem_OnContextMenuRemoveClick" />
                                       </ContextMenu>
                                     </Border.ContextMenu>
                                     <Grid ColumnDefinitions="4,*">
                                       <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
-                                      <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
-                                        <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}"
-                                                 VerticalAlignment="Center" ToolTip.Tip="{Binding StatusHint}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
-                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                      </Grid>
-                                    </Grid>
+                                       <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
+                                         <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}"
+                                                  VerticalAlignment="Center" ToolTip.Tip="{Binding StatusHint}" />
+                                         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
+                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                       </Grid>
+                                     </Grid>
                                   </Border>
                                 </DataTemplate>
                               </ListBox.ItemTemplate>
                             </ListBox>
+                            <Grid x:Name="RmvpeSlotPlaceholder" Classes="slot-drop-placeholder" Height="42">
+                              <Border Classes="slot-drop-surface" CornerRadius="8" />
+                              <Rectangle Classes="slot-drop-outline" StrokeThickness="1"
+                                         StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
+                              <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <mi:MaterialIcon Kind="CloudUploadOutline" Width="16" Height="16" Foreground="{StaticResource TextMutedBrush}" />
+                                <TextBlock Text="拖入文件绑定" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+                              </StackPanel>
+                            </Grid>
+                          </StackPanel>
+                        </Border>
+
+                        <!-- Optional PyMSS training preprocessing slots -->
+                        <Border x:Name="PymssWeightSlotBorder" Classes="model-sidebar-section" Padding="0,12" Tag="pymss_weight"
+                                DragDrop.AllowDrop="True">
+                          <StackPanel Spacing="8">
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+                              <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
+                                      CornerRadius="2" VerticalAlignment="Center" />
+                              <TextBlock Grid.Column="1" Text="PyMSS"
+                                         FontSize="14" FontWeight="SemiBold"
+                                         Foreground="{StaticResource TextStrongBrush}" VerticalAlignment="Center" />
+                            </Grid>
+                            <ListBox x:Name="PymssWeightSlotListBox" MaxHeight="80"
+                                     SelectionChanged="SlotListBox_OnSelectionChanged">
+                              <ListBox.ItemTemplate>
+                                <DataTemplate DataType="model:SlotBindingItem">
+                                  <Border Classes="item-card" Margin="0,0,0,4" Padding="0">
+                                    <Border.ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed"><MenuItem Header="移除" Click="SlotItem_OnContextMenuRemoveClick" /></ContextMenu>
+                                    </Border.ContextMenu>
+                                    <Grid ColumnDefinitions="4,*">
+                                      <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
+                                       <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
+                                         <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" VerticalAlignment="Center"
+                                                  ToolTip.Tip="{Binding StatusHint}" />
+                                         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
+                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                       </Grid>
+                                     </Grid>
+                                  </Border>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Grid x:Name="PymssWeightSlotPlaceholder" Classes="slot-drop-placeholder" Height="42">
+                              <Border Classes="slot-drop-surface" CornerRadius="8" />
+                              <Rectangle Classes="slot-drop-outline"
+                                         StrokeThickness="1"
+                                         StrokeDashArray="4,3"
+                                         RadiusX="8"
+                                         RadiusY="8" />
+                              <StackPanel Orientation="Horizontal" Spacing="6"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <mi:MaterialIcon Kind="CloudUploadOutline" Width="16" Height="16" Foreground="{StaticResource TextMutedBrush}" />
+                                <TextBlock Text="拖入文件绑定" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+                              </StackPanel>
+                            </Grid>
+                          </StackPanel>
+                        </Border>
+
+                        <Border x:Name="PymssConfigSlotBorder" Classes="model-sidebar-section" Padding="0,12" Tag="pymss_config"
+                                DragDrop.AllowDrop="True">
+                          <StackPanel Spacing="8">
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+                              <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
+                                      CornerRadius="2" VerticalAlignment="Center" />
+                              <TextBlock Grid.Column="1" Text="PyMSS 配置"
+                                         FontSize="14" FontWeight="SemiBold"
+                                         Foreground="{StaticResource TextStrongBrush}" VerticalAlignment="Center" />
+                            </Grid>
+                            <ListBox x:Name="PymssConfigSlotListBox" MaxHeight="80"
+                                     SelectionChanged="SlotListBox_OnSelectionChanged">
+                              <ListBox.ItemTemplate>
+                                <DataTemplate DataType="model:SlotBindingItem">
+                                  <Border Classes="item-card" Margin="0,0,0,4" Padding="0">
+                                    <Border.ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed"><MenuItem Header="移除" Click="SlotItem_OnContextMenuRemoveClick" /></ContextMenu>
+                                    </Border.ContextMenu>
+                                    <Grid ColumnDefinitions="4,*">
+                                      <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
+                                       <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
+                                         <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" VerticalAlignment="Center"
+                                                  ToolTip.Tip="{Binding StatusHint}" />
+                                         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
+                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                       </Grid>
+                                     </Grid>
+                                  </Border>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Grid x:Name="PymssConfigSlotPlaceholder" Classes="slot-drop-placeholder" Height="42">
+                              <Border Classes="slot-drop-surface" CornerRadius="8" />
+                              <Rectangle Classes="slot-drop-outline" StrokeThickness="1"
+                                         StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
+                              <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <mi:MaterialIcon Kind="CloudUploadOutline" Width="16" Height="16" Foreground="{StaticResource TextMutedBrush}" />
+                                <TextBlock Text="拖入文件绑定" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+                              </StackPanel>
+                            </Grid>
+                          </StackPanel>
+                        </Border>
+
+                        <Border x:Name="PretrainedGeneratorSlotBorder" Classes="model-sidebar-section" Padding="0,12" Tag="pretrained_g"
+                                DragDrop.AllowDrop="True">
+                          <StackPanel Spacing="8">
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+                              <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
+                                      CornerRadius="2" VerticalAlignment="Center" />
+                              <TextBlock Grid.Column="1" Text="RVC 预训练生成器 (G)"
+                                         FontSize="14" FontWeight="SemiBold"
+                                         Foreground="{StaticResource TextStrongBrush}" VerticalAlignment="Center" />
+                            </Grid>
+                            <ListBox x:Name="PretrainedGeneratorSlotListBox" MaxHeight="80"
+                                     SelectionChanged="SlotListBox_OnSelectionChanged">
+                              <ListBox.ItemTemplate>
+                                <DataTemplate DataType="model:SlotBindingItem">
+                                  <Border Classes="item-card" Margin="0,0,0,4" Padding="0">
+                                    <Border.ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed"><MenuItem Header="移除" Click="SlotItem_OnContextMenuRemoveClick" /></ContextMenu>
+                                    </Border.ContextMenu>
+                                    <Grid ColumnDefinitions="4,*">
+                                      <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
+                                       <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
+                                         <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" VerticalAlignment="Center"
+                                                  ToolTip.Tip="{Binding StatusHint}" />
+                                         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
+                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                       </Grid>
+                                     </Grid>
+                                  </Border>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Grid x:Name="PretrainedGeneratorSlotPlaceholder" Classes="slot-drop-placeholder" Height="42">
+                              <Border Classes="slot-drop-surface" CornerRadius="8" />
+                              <Rectangle Classes="slot-drop-outline" StrokeThickness="1"
+                                         StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
+                              <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <mi:MaterialIcon Kind="CloudUploadOutline" Width="16" Height="16" Foreground="{StaticResource TextMutedBrush}" />
+                                <TextBlock Text="拖入文件绑定" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+                              </StackPanel>
+                            </Grid>
+                          </StackPanel>
+                        </Border>
+
+                        <Border x:Name="PretrainedDiscriminatorSlotBorder" Classes="model-sidebar-section last" Padding="0,12,0,0" Tag="pretrained_d"
+                                DragDrop.AllowDrop="True">
+                          <StackPanel Spacing="8">
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+                              <Border Width="3" Height="16" Background="{StaticResource AccentBrush}"
+                                      CornerRadius="2" VerticalAlignment="Center" />
+                              <TextBlock Grid.Column="1" Text="RVC 预训练判别器 (D)"
+                                         FontSize="14" FontWeight="SemiBold"
+                                         Foreground="{StaticResource TextStrongBrush}" VerticalAlignment="Center" />
+                            </Grid>
+                            <ListBox x:Name="PretrainedDiscriminatorSlotListBox" MaxHeight="80"
+                                     SelectionChanged="SlotListBox_OnSelectionChanged">
+                              <ListBox.ItemTemplate>
+                                <DataTemplate DataType="model:SlotBindingItem">
+                                  <Border Classes="item-card" Margin="0,0,0,4" Padding="0">
+                                    <Border.ContextMenu>
+                                      <ContextMenu Classes="remove-context-menu"
+                                                   Opened="RemoveContextMenu_OnOpened"
+                                                   Closing="RemoveContextMenu_OnClosing"
+                                                   Closed="RemoveContextMenu_OnClosed"><MenuItem Header="移除" Click="SlotItem_OnContextMenuRemoveClick" /></ContextMenu>
+                                    </Border.ContextMenu>
+                                    <Grid ColumnDefinitions="4,*">
+                                      <Border Classes="left-accent-bar" CornerRadius="8,0,0,8" />
+                                       <Grid Grid.Column="1" ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="9,7,10,7">
+                                         <Ellipse Width="8" Height="8" Fill="{Binding StatusBrush}" VerticalAlignment="Center"
+                                                  ToolTip.Tip="{Binding StatusHint}" />
+                                         <TextBlock Grid.Column="1" Text="{Binding FileName}" FontWeight="SemiBold" FontSize="12"
+                                                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                       </Grid>
+                                     </Grid>
+                                  </Border>
+                                </DataTemplate>
+                              </ListBox.ItemTemplate>
+                            </ListBox>
+                            <Grid x:Name="PretrainedDiscriminatorSlotPlaceholder" Classes="slot-drop-placeholder" Height="42">
+                              <Border Classes="slot-drop-surface" CornerRadius="8" />
+                              <Rectangle Classes="slot-drop-outline" StrokeThickness="1"
+                                         StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
+                              <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <mi:MaterialIcon Kind="CloudUploadOutline" Width="16" Height="16" Foreground="{StaticResource TextMutedBrush}" />
+                                <TextBlock Text="拖入文件绑定" FontSize="11" Foreground="{StaticResource TextMutedBrush}" />
+                              </StackPanel>
+                            </Grid>
                           </StackPanel>
                         </Border>
 
 
-                      </StackPanel>
-                    </ScrollViewer>
+                        </StackPanel>
+                      </ScrollViewer>
+                    </Border>
 
                     <!-- ===== RIGHT: Server File Browser ===== -->
-                    <Border Grid.Column="1" Classes="section-card" Padding="16">
+                    <Border Grid.Column="1" Classes="section-card model-files-panel" Padding="16">
                       <Grid RowDefinitions="Auto,*" RowSpacing="12">
                         <StackPanel Spacing="8">
                           <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Classes="secondary-action" Content="刷新" Click="RefreshServerFiles_OnClick" />
-                            <Button Classes="secondary-action" Content="上传" Click="UploadFile_OnClick" />
-                            <Button x:Name="DeleteFileButton" Classes="secondary-action" Content="删除" Click="DeleteSelectedFile_OnClick" IsEnabled="False" />
-                            <Button x:Name="RenameFileButton" Classes="secondary-action" Content="重命名" Click="RenameSelectedFile_OnClick" IsEnabled="False" />
+                            <Button x:Name="ServerFilesRefreshButton"
+                                    Classes="secondary-action file-toolbar-action"
+                                    AutomationProperties.Name="刷新"
+                                    Click="RefreshServerFiles_OnClick"
+                                    IsEnabled="False">
+                              <StackPanel Orientation="Horizontal">
+                                <mi:MaterialIcon Classes="file-toolbar-icon" Kind="Refresh" />
+                                <TextBlock Classes="file-toolbar-label" Text="刷新" />
+                              </StackPanel>
+                            </Button>
+                            <Button x:Name="ServerFilesUploadButton"
+                                    Classes="secondary-action file-toolbar-action"
+                                    AutomationProperties.Name="上传文件"
+                                    Click="UploadFile_OnClick"
+                                    IsEnabled="False">
+                              <StackPanel Orientation="Horizontal">
+                                <mi:MaterialIcon Classes="file-toolbar-icon" Kind="FileUploadOutline" />
+                                <TextBlock Classes="file-toolbar-label" Text="上传文件" />
+                              </StackPanel>
+                            </Button>
+                            <Button x:Name="ServerFolderUploadButton"
+                                    Classes="secondary-action file-toolbar-action"
+                                    AutomationProperties.Name="上传文件夹"
+                                    Click="UploadFolder_OnClick"
+                                    IsEnabled="False">
+                              <StackPanel Orientation="Horizontal">
+                                <mi:MaterialIcon Classes="file-toolbar-icon" Kind="FolderUploadOutline" />
+                                <TextBlock Classes="file-toolbar-label" Text="上传文件夹" />
+                              </StackPanel>
+                            </Button>
+                            <Button x:Name="HubDownloadButton"
+                                    Classes="secondary-action file-toolbar-action"
+                                    AutomationProperties.Name="下载模型"
+                                    Click="HubDownload_OnClick"
+                                    IsEnabled="False">
+                              <StackPanel Orientation="Horizontal">
+                                <mi:MaterialIcon Classes="file-toolbar-icon" Kind="DownloadOutline" />
+                                <TextBlock Classes="file-toolbar-label" Text="下载模型" />
+                              </StackPanel>
+                            </Button>
+                            <Button x:Name="DeleteFileButton"
+                                    Classes="secondary-action file-toolbar-action"
+                                    AutomationProperties.Name="删除"
+                                    Click="DeleteSelectedFile_OnClick"
+                                    IsEnabled="False">
+                              <StackPanel Orientation="Horizontal">
+                                <mi:MaterialIcon Classes="file-toolbar-icon" Kind="DeleteOutline" />
+                                <TextBlock Classes="file-toolbar-label" Text="删除" />
+                              </StackPanel>
+                            </Button>
+                            <Button x:Name="RenameFileButton"
+                                    Classes="secondary-action file-toolbar-action"
+                                    AutomationProperties.Name="重命名"
+                                    Click="RenameSelectedFile_OnClick"
+                                    IsEnabled="False">
+                              <StackPanel Orientation="Horizontal">
+                                <mi:MaterialIcon Classes="file-toolbar-icon" Kind="RenameBoxOutline" />
+                                <TextBlock Classes="file-toolbar-label" Text="重命名" />
+                              </StackPanel>
+                            </Button>
                           </StackPanel>
                           <StackPanel Orientation="Horizontal" Spacing="10">
-                            <ComboBox x:Name="FileSortComboBox" MinWidth="130" SelectionChanged="FileSortComboBox_OnSelectionChanged">
+                            <local:AnimatedComboBox x:Name="FileSortComboBox" MinWidth="130"
+                                                    SelectionChanged="FileSortComboBox_OnSelectionChanged">
                               <ComboBoxItem Content="时间-新→旧" Tag="time_desc" />
                               <ComboBoxItem Content="时间-旧→新" Tag="time_asc" />
                               <ComboBoxItem Content="名称-A→Z" Tag="name_asc" />
                               <ComboBoxItem Content="名称-Z→A" Tag="name_desc" />
-                            </ComboBox>
+                            </local:AnimatedComboBox>
                             <CheckBox x:Name="HideBoundFilesCheckBox" VerticalAlignment="Center" Content="隐藏已绑定文件" Click="HideBoundFilesCheckBox_OnClick" />
                           </StackPanel>
                           <TextBlock Text="拖拽文件到左侧槽位即可绑定"
@@ -822,23 +1128,101 @@
                                      Classes="muted"
                                      Margin="4,0,0,0" />
                         </StackPanel>
+                        <Border Grid.Row="1" Classes="server-files-frame">
+                          <Grid RowDefinitions="Auto,*">
+                            <Border Classes="file-table-header" Padding="14,10">
+                              <Grid ColumnDefinitions="*,100,150">
+                                <TextBlock Text="名称" Classes="file-table-header-text" />
+                                <TextBlock Grid.Column="1" Text="大小" Classes="file-table-header-text" />
+                                <TextBlock Grid.Column="2" Text="修改时间" Classes="file-table-header-text" />
+                              </Grid>
+                            </Border>
                         <ListBox x:Name="ServerFilesListBox"
-                                 Classes="server-files-list"
                                  Grid.Row="1"
-                                 Padding="0,0,10,0"
+                                 Classes="server-files-list"
+                                 Padding="0,0,8,0"
                                  SelectionMode="Multiple"
                                  SelectionChanged="ServerFilesListBox_OnSelectionChanged">
                           <ListBox.ItemTemplate>
                             <DataTemplate DataType="model:ServerFileItem">
-                              <Border Classes="item-card selectable-item-card server-file-card"
-                                      Margin="0,0,0,8"
-                                      Padding="12,10"
+                              <Border Classes="server-file-row"
+                                      Margin="{Binding TreeIndent, Converter={StaticResource TreeIndentToMarginConverter}, ConverterParameter=0}"
+                                      Padding="14,15"
+                                      Opacity="{Binding TreeOpacity}"
                                       PointerPressed="ServerFileItem_PointerPressed"
-                                      PointerMoved="ServerFileItem_PointerMoved">
-                                <StackPanel Spacing="4">
-                                    <Grid>
-                                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" IsVisible="{Binding !IsEditing}" VerticalAlignment="Center" />
-                                      <TextBox Text="{Binding EditingName}" IsVisible="{Binding IsEditing}"
+                                      PointerMoved="ServerFileItem_PointerMoved"
+                                      ToolTip.Tip="{Binding Name}">
+                                <Border.RenderTransform>
+                                  <TranslateTransform Y="{Binding TreeOffsetY}">
+                                    <TranslateTransform.Transitions>
+                                      <Transitions>
+                                        <DoubleTransition Property="Y" Duration="0:0:0.15" />
+                                      </Transitions>
+                                    </TranslateTransform.Transitions>
+                                  </TranslateTransform>
+                                </Border.RenderTransform>
+                                <Border.Transitions>
+                                  <Transitions>
+                                    <BrushTransition Property="Background" Duration="0:0:0.15" />
+                                    <BrushTransition Property="BorderBrush" Duration="0:0:0.15" />
+                                    <DoubleTransition Property="Opacity" Duration="0:0:0.15" />
+                                  </Transitions>
+                                </Border.Transitions>
+                                  <StackPanel Spacing="7">
+                                    <Grid ColumnDefinitions="Auto,Auto,*,100,150" ColumnSpacing="9">
+                                      <mi:MaterialIcon Kind="ChevronRight"
+                                                       Width="18" Height="18"
+                                                       Foreground="{StaticResource TextMutedBrush}"
+                                                       IsVisible="{Binding CanExpand}"
+                                                       RenderTransformOrigin="50%,50%"
+                                                       VerticalAlignment="Center">
+                                        <mi:MaterialIcon.RenderTransform>
+                                          <RotateTransform Angle="{Binding ExpandRotation}">
+                                            <RotateTransform.Transitions>
+                                              <Transitions>
+                                                <DoubleTransition Property="Angle" Duration="0:0:0.18" />
+                                              </Transitions>
+                                            </RotateTransform.Transitions>
+                                          </RotateTransform>
+                                        </mi:MaterialIcon.RenderTransform>
+                                      </mi:MaterialIcon>
+                                      <Grid Grid.Column="1"
+                                            Width="22"
+                                            Height="22"
+                                            IsVisible="{Binding IsModelRootFolder}"
+                                            VerticalAlignment="Center">
+                                        <mi:MaterialIcon Kind="FolderOutline"
+                                                         Width="22"
+                                                         Height="22"
+                                                         Foreground="{StaticResource AccentBrush}" />
+                                        <TextBlock Text="M"
+                                                   Margin="0,5,0,0"
+                                                   FontSize="8"
+                                                   FontWeight="Bold"
+                                                   Foreground="{StaticResource AccentTextBrush}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                      </Grid>
+                                      <mi:MaterialIcon Grid.Column="1"
+                                                       Kind="FolderOutline"
+                                                       Width="20" Height="20"
+                                                       Foreground="#E5B341"
+                                                       IsVisible="{Binding ShowRegularFolderIcon}"
+                                                       VerticalAlignment="Center" />
+                                      <mi:MaterialIcon Grid.Column="1"
+                                                       Kind="FileOutline"
+                                                       Width="20" Height="20"
+                                                       Foreground="{StaticResource TextMutedBrush}"
+                                                       IsVisible="{Binding !CanExpand}"
+                                                       VerticalAlignment="Center" />
+                                      <TextBlock Grid.Column="2"
+                                                 Text="{Binding DisplayName}"
+                                                 FontSize="13"
+                                                 FontWeight="SemiBold"
+                                                 TextTrimming="CharacterEllipsis"
+                                                 IsVisible="{Binding !IsEditing}"
+                                                 VerticalAlignment="Center" />
+                                      <TextBox Grid.Column="2" Text="{Binding EditingName}" IsVisible="{Binding IsEditing}"
                                                KeyDown="RenameTextBox_OnKeyDown" LostFocus="RenameTextBox_OnLostFocus"
                                                FontWeight="SemiBold"
                                                Padding="4,3"
@@ -846,20 +1230,379 @@
                                                CornerRadius="3"
                                                VerticalContentAlignment="Center"
                                                MinHeight="0" />
+                                      <TextBlock Grid.Column="3"
+                                                 Text="{Binding SizeText}"
+                                                 Classes="muted"
+                                                 FontSize="11"
+                                                 VerticalAlignment="Center"
+                                                 TextAlignment="Left" />
+                                      <TextBlock Grid.Column="4"
+                                                 Text="{Binding ModifiedText}"
+                                                 Classes="muted"
+                                                 FontSize="11"
+                                                 VerticalAlignment="Center"
+                                                 TextAlignment="Left" />
                                     </Grid>
-                                  <TextBlock Text="{Binding DetailText}" Classes="muted" />
-                                </StackPanel>
+                                  <Border IsVisible="{Binding ShowUploadChildren}"
+                                          Background="#0D2F8F75" CornerRadius="6" Padding="8,5" Margin="0,4,0,0">
+                                    <ItemsControl ItemsSource="{Binding UploadChildren}">
+                                      <ItemsControl.ItemTemplate>
+                                        <DataTemplate DataType="model:ServerFileItem">
+                                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,3">
+                                            <StackPanel Spacing="1">
+                                              <TextBlock Text="{Binding Name}" FontSize="11" TextTrimming="CharacterEllipsis" />
+                                              <TextBlock Text="{Binding DetailText}" Classes="muted" FontSize="10" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1" Text="✓" Foreground="#2E9F4D"
+                                                       IsVisible="{Binding UploadCompleted}" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Text="×" Foreground="#D14B4B"
+                                                       IsVisible="{Binding UploadFailed}" VerticalAlignment="Center" />
+                                          </Grid>
+                                        </DataTemplate>
+                                      </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                  </Border>
+                                  </StackPanel>
                               </Border>
                             </DataTemplate>
                           </ListBox.ItemTemplate>
-                        </ListBox>
+                         </ListBox>
+                          </Grid>
+                         </Border>
                       </Grid>
                     </Border>
 
                   </Grid>
                 </TabItem>
 
-                <!-- ===== TAB 2: 日志 ===== -->
+                <!-- ===== TAB 2: 训练 ===== -->
+                <TabItem Header="训练" Classes="main-tab">
+                  <Grid RowDefinitions="*,Auto" MinHeight="0" ClipToBounds="True">
+                    <ScrollViewer Grid.Row="0"
+                                  local:SmoothScrollBehavior.IsEnabled="True"
+                                  MinHeight="0"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  IsScrollChainingEnabled="True"
+                                  ClipToBounds="True"
+                                  Padding="14,22,4,0">
+                      <StackPanel Spacing="16">
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10" Margin="0,0,0,24">
+                          <Border Classes="section-icon">
+                            <mi:MaterialIcon Classes="section-icon-glyph" Kind="CogSyncOutline" />
+                          </Border>
+                          <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="训练设置"
+                                       FontSize="17"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextStrongBrush}" />
+                            <TextBlock Text="上传音频、配置训练参数并开始训练模型。"
+                                       Classes="muted"
+                                       FontSize="11" />
+                          </StackPanel>
+                        </Grid>
+
+                        <Grid ColumnDefinitions="1*,1*"
+                              RowDefinitions="Auto,Auto,Auto,Auto"
+                              ColumnSpacing="28"
+                              RowSpacing="28">
+                          <StackPanel Grid.Row="0" Grid.Column="0" Spacing="5">
+                            <TextBlock Text="模型名称" Classes="training-form-label" />
+                            <TextBox x:Name="TrainingNameBox"
+                                     Classes="training-field"
+                                     TextChanged="TrainingNameBox_OnTextChanged" />
+                          </StackPanel>
+                          <StackPanel Grid.Row="0" Grid.Column="1" Spacing="5">
+                            <TextBlock Text="批大小" Classes="training-form-label" />
+                            <TextBox x:Name="TrainingBatchSizeBox"
+                                     Classes="training-field"
+                                     Text="4" />
+                          </StackPanel>
+                          <StackPanel Grid.Row="1" Grid.Column="0" Spacing="5">
+                            <TextBlock Text="训练轮数" Classes="training-form-label" />
+                            <TextBox x:Name="TrainingEpochsBox"
+                                     Classes="training-field"
+                                     Text="200" />
+                          </StackPanel>
+                          <StackPanel Grid.Row="1" Grid.Column="1" Spacing="5">
+                            <TextBlock Text="预训练权重" Classes="training-form-label" />
+                            <CheckBox x:Name="TrainingUsePretrainedCheckBox"
+                                      Content="使用预训练生成器 / 判别器"
+                                      Margin="0,7,0,7"
+                                      VerticalAlignment="Center" />
+                          </StackPanel>
+                          <StackPanel Grid.Row="2" Grid.Column="0" Spacing="5">
+                            <TextBlock Text="采样率" Classes="training-form-label" />
+                            <local:AnimatedComboBox x:Name="TrainingSampleRateBox"
+                                                    Classes="training-field"
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectedIndex="1">
+                              <ComboBoxItem Content="32000" />
+                              <ComboBoxItem Content="40000" />
+                              <ComboBoxItem Content="48000" />
+                            </local:AnimatedComboBox>
+                          </StackPanel>
+                          <StackPanel Grid.Row="3" Grid.Column="0" Spacing="5">
+                            <TextBlock Text="训练前预处理" Classes="training-form-label" />
+                            <local:AnimatedComboBox x:Name="TrainingPreprocessBox"
+                                                    Classes="training-field"
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectedIndex="0">
+                              <ComboBoxItem Content="不处理，直接训练" Tag="none" />
+                              <ComboBoxItem Content="去伴奏，保留人声" Tag="vocals" />
+                              <ComboBoxItem Content="去混响" Tag="noreverb" />
+                              <ComboBoxItem Content="提取主旋律" Tag="karaoke" />
+                            </local:AnimatedComboBox>
+                            <TextBlock Text="启用后会先通过已激活的 PyMSS 模型处理所选音频，再切片并提取训练特征。"
+                                       Classes="muted"
+                                       FontSize="11"
+                                       TextWrapping="Wrap" />
+                          </StackPanel>
+                        </Grid>
+
+                        <Border Classes="training-section-divider" />
+
+                        <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8">
+                          <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                            <TextBlock Text="训练音频"
+                                       FontSize="17"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextStrongBrush}"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="TrainingAudioSummaryText"
+                                       Text="0 个音频组 · 0 个音频文件"
+                                       Classes="muted"
+                                       FontSize="11"
+                                       VerticalAlignment="Center" />
+                          </StackPanel>
+                          <Button x:Name="TrainingUploadAudioButton"
+                                  Grid.Column="1"
+                                  Classes="secondary-action training-toolbar-action"
+                                  Click="UploadFile_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <mi:MaterialIcon Kind="FileUploadOutline" />
+                              <TextBlock Text="上传音频" />
+                            </StackPanel>
+                          </Button>
+                          <Button x:Name="TrainingUploadFolderButton"
+                                  Grid.Column="2"
+                                  Classes="secondary-action training-toolbar-action"
+                                  Click="UploadFolder_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <mi:MaterialIcon Kind="FolderUploadOutline" />
+                              <TextBlock Text="上传文件夹" />
+                            </StackPanel>
+                          </Button>
+                          <Button x:Name="TrainingOrganizeButton"
+                                  Grid.Column="3"
+                                  Classes="secondary-action training-toolbar-action"
+                                  Click="TrainingOrganizeFiles_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <mi:MaterialIcon Kind="FolderCogOutline" />
+                              <TextBlock Text="整理文件" />
+                            </StackPanel>
+                          </Button>
+                          <Button x:Name="TrainingSelectAllButton"
+                                  Grid.Column="4"
+                                  Classes="secondary-action training-toolbar-action"
+                                  Click="TrainingSelectAll_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <mi:MaterialIcon Kind="SelectAll" />
+                              <TextBlock Text="全选" />
+                            </StackPanel>
+                          </Button>
+                          <Button x:Name="TrainingClearButton"
+                                  Grid.Column="5"
+                                  Classes="secondary-action training-toolbar-action"
+                                  Click="TrainingClear_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <mi:MaterialIcon Kind="Broom" />
+                              <TextBlock Text="清空" />
+                            </StackPanel>
+                          </Button>
+                        </Grid>
+
+                        <ScrollViewer MaxHeight="360" VerticalScrollBarVisibility="Auto">
+                          <ItemsControl x:Name="TrainingSpeakerGroupsList">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate DataType="model:TrainingSpeakerGroup">
+                                <Border Classes="training-speaker-group" Margin="0,0,0,10">
+                                  <StackPanel>
+                                    <Border Classes="training-speaker-header"
+                                            PointerPressed="TrainingSpeakerGroupHeader_OnPointerPressed">
+                                      <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10">
+                                        <mi:MaterialIcon Kind="ChevronRight"
+                                                         Width="17"
+                                                         Height="17"
+                                                         Foreground="{StaticResource TextMutedBrush}"
+                                                         RenderTransformOrigin="50%,50%"
+                                                         VerticalAlignment="Center">
+                                          <mi:MaterialIcon.RenderTransform>
+                                            <RotateTransform Angle="{Binding ExpandRotation}">
+                                              <RotateTransform.Transitions>
+                                                <Transitions>
+                                                  <DoubleTransition Property="Angle" Duration="0:0:0.18" />
+                                                </Transitions>
+                                              </RotateTransform.Transitions>
+                                            </RotateTransform>
+                                          </mi:MaterialIcon.RenderTransform>
+                                        </mi:MaterialIcon>
+                                        <TextBox Grid.Column="1"
+                                                 Text="{Binding Name, Mode=TwoWay}"
+                                                 Classes="inline-name-edit training-speaker-name"
+                                                 PlaceholderText="说话人"
+                                                 ToolTip.Tip="点击修改说话人名称"
+                                                 FontWeight="SemiBold" />
+                                        <Border Grid.Column="2" Classes="training-audio-count-pill">
+                                          <TextBlock Text="{Binding FileCountText}"
+                                                     Foreground="{StaticResource AccentTextBrush}"
+                                                     FontSize="10"
+                                                     VerticalAlignment="Center" />
+                                        </Border>
+                                        <mi:MaterialIcon Grid.Column="3"
+                                                         Kind="DotsVertical"
+                                                         Width="17"
+                                                         Height="17"
+                                                         Foreground="{StaticResource TextMutedBrush}"
+                                                         VerticalAlignment="Center" />
+                                      </Grid>
+                                    </Border>
+                                    <Border Classes="training-group-files animated-panel"
+                                            Classes.collapsed="{Binding !IsExpanded}">
+                                      <ItemsControl ItemsSource="{Binding Files}">
+                                        <ItemsControl.ItemTemplate>
+                                          <DataTemplate DataType="model:TrainingAudioItem">
+                                            <Border Classes="training-audio-row"
+                                                    Classes.selected="{Binding IsSelected}"
+                                                    PointerPressed="TrainingAudioItem_OnPointerPressed"
+                                                    ToolTip.Tip="{Binding Name}">
+                                              <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="11">
+                                                <Border Classes="training-audio-icon-box">
+                                                  <mi:MaterialIcon Kind="FileMusicOutline"
+                                                                   Width="17"
+                                                                   Height="17"
+                                                                   Foreground="{StaticResource AccentTextBrush}"
+                                                                   HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                                  <TextBlock Text="{Binding DisplayName}"
+                                                             FontWeight="SemiBold"
+                                                             TextTrimming="CharacterEllipsis" />
+                                                  <TextBlock Text="{Binding DetailText}"
+                                                             Classes="muted"
+                                                             FontSize="10"
+                                                             TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                                <mi:MaterialIcon Grid.Column="2"
+                                                                 Kind="DotsHorizontal"
+                                                                 Width="17"
+                                                                 Height="17"
+                                                                 Foreground="{StaticResource TextMutedBrush}"
+                                                                 VerticalAlignment="Center" />
+                                              </Grid>
+                                            </Border>
+                                          </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                      </ItemsControl>
+                                    </Border>
+                                  </StackPanel>
+                                </Border>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </ScrollViewer>
+
+                        <Expander x:Name="TrainingHistoryExpander"
+                                  Header="训练记录"
+                                  Classes="training-history"
+                                  IsExpanded="False"
+                                  IsVisible="False">
+                          <ListBox x:Name="TrainingJobsListBox"
+                                   SelectionChanged="TrainingJobs_OnSelectionChanged"
+                                   MaxHeight="220">
+                            <ListBox.ItemTemplate>
+                              <DataTemplate DataType="model:TrainingJobItem">
+                                <Border Classes="training-job-row" Margin="0,0,0,6" Padding="11,9">
+                                  <StackPanel Spacing="4">
+                                    <Grid ColumnDefinitions="*,Auto">
+                                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                      <TextBlock Grid.Column="1"
+                                                 Text="{Binding ProgressText}"
+                                                 Foreground="{StaticResource AccentBrush}" />
+                                    </Grid>
+                                    <TextBlock Text="{Binding DetailText}"
+                                               TextWrapping="Wrap"
+                                               Classes="muted"
+                                               FontSize="11" />
+                                  </StackPanel>
+                                </Border>
+                              </DataTemplate>
+                            </ListBox.ItemTemplate>
+                          </ListBox>
+                        </Expander>
+                      </StackPanel>
+                    </ScrollViewer>
+
+                    <Border Grid.Row="1" Classes="training-footer" Margin="0,10,16,0">
+                      <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+                        <ProgressBar x:Name="TrainingProgressBar"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Value="0"
+                                     Height="3" />
+                        <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="12">
+                          <Button x:Name="TrainingStartButton"
+                                  Grid.Column="0"
+                                  Classes="primary-action training-start-action"
+                                  Click="TrainingStart_OnClick">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                              <mi:MaterialIcon Kind="Play" Width="18" Height="18" />
+                              <TextBlock Text="开始训练" />
+                            </StackPanel>
+                          </Button>
+                          <Button x:Name="TrainingRefreshButton"
+                                  Grid.Column="1"
+                                  Classes="secondary-action"
+                                  Click="TrainingRefresh_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                              <mi:MaterialIcon Kind="Refresh" Width="17" Height="17" />
+                              <TextBlock Text="刷新" />
+                            </StackPanel>
+                          </Button>
+                          <StackPanel Grid.Column="2"
+                                      Orientation="Horizontal"
+                                      Spacing="8"
+                                      VerticalAlignment="Center">
+                            <Ellipse Width="7" Height="7" Fill="{StaticResource AccentBrush}" />
+                            <TextBlock x:Name="TrainingStatusText"
+                                       Text="等待任务"
+                                       Classes="muted"
+                                       VerticalAlignment="Center" />
+                          </StackPanel>
+                          <Button x:Name="TrainingCancelButton"
+                                  Grid.Column="3"
+                                  Classes="secondary-action"
+                                  Click="TrainingCancel_OnClick"
+                                  IsEnabled="False">
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                              <mi:MaterialIcon Kind="CloseCircleOutline" Width="17" Height="17" />
+                              <TextBlock Text="取消任务" />
+                            </StackPanel>
+                          </Button>
+                        </Grid>
+                      </Grid>
+                    </Border>
+                  </Grid>
+                </TabItem>
+
+                <!-- ===== TAB 3: 日志 ===== -->
                 <TabItem Header="日志" Classes="main-tab">
                   <Grid RowDefinitions="*" RowSpacing="0">
                     <Grid Grid.Row="0" ColumnDefinitions="1*,1*" ColumnSpacing="18">
@@ -874,6 +1617,7 @@
                             <Button Grid.Column="1" Classes="secondary-action" Content="清空" Click="ClearLogs_OnClick" />
                           </Grid>
                           <TextBox x:Name="LogTextBox"
+                                   Classes="log-view"
                                    Grid.Row="1"
                                    AcceptsReturn="True"
                                    IsReadOnly="True"
@@ -881,8 +1625,6 @@
                                    TextAlignment="Left"
                                    VerticalContentAlignment="Top"
                                    FontFamily="Cascadia Code, Consolas, Microsoft YaHei UI"
-                                   Background="{StaticResource CanvasSoftBrush}"
-                                   BorderBrush="{StaticResource BorderSoftBrush}"
                                    BorderThickness="1"
                                    CornerRadius="9"
                                    Padding="10" />
@@ -896,21 +1638,21 @@
                                        FontWeight="SemiBold"
                                        Foreground="{StaticResource TextStrongBrush}"
                                        VerticalAlignment="Center" />
-                            <Button Grid.Column="1" Classes="secondary-action" Content="刷新" Click="RefreshLogs_OnClick" Margin="0,0,8,0" />
-                            <Button Grid.Column="2" Classes="secondary-action" Content="清空历史" Click="ClearOldLogs_OnClick" />
+                            <Button x:Name="ServerLogsRefreshButton" Grid.Column="1" Classes="secondary-action" Content="刷新" Click="RefreshLogs_OnClick" Margin="0,0,8,0" IsEnabled="False" />
+                            <Button x:Name="ServerLogsClearButton" Grid.Column="2" Classes="secondary-action" Content="清空历史" Click="ClearOldLogs_OnClick" IsEnabled="False" />
                           </Grid>
                           <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
-                            <ComboBox x:Name="ServerLogFilesComboBox"
-                                      PlaceholderText="选择日志文件..."
-                                      HorizontalAlignment="Stretch"
-                                      SelectionChanged="ServerLogFilesComboBox_OnSelectionChanged">
+                            <local:AnimatedComboBox x:Name="ServerLogFilesComboBox"
+                                                    PlaceholderText="选择日志文件..."
+                                                    HorizontalAlignment="Stretch"
+                                                    SelectionChanged="ServerLogFilesComboBox_OnSelectionChanged">
                               <ComboBox.ItemsPanel>
                                 <ItemsPanelTemplate>
                                   <StackPanel />
                                 </ItemsPanelTemplate>
                               </ComboBox.ItemsPanel>
-                            </ComboBox>
-                            <Button Grid.Column="1" Classes="secondary-action" Content="读取" Click="ReadSelectedServerLog_OnClick" />
+                            </local:AnimatedComboBox>
+                            <Button x:Name="ServerLogReadButton" Grid.Column="1" Classes="secondary-action" Content="读取" Click="ReadSelectedServerLog_OnClick" IsEnabled="False" />
                             <Button Grid.Column="2" Classes="secondary-action" Content="保存" Click="SaveServerLog_OnClick" />
                             <CheckBox Grid.Column="3" x:Name="SyncCurrentLogCheckBox"
                                       VerticalAlignment="Center"
@@ -918,6 +1660,7 @@
                                       Click="SyncCurrentLogCheckBox_OnClick" />
                           </Grid>
                           <TextBox x:Name="ServerLogTextBox"
+                                   Classes="log-view"
                                    Grid.Row="2"
                                    AcceptsReturn="True"
                                    IsReadOnly="True"
@@ -925,8 +1668,6 @@
                                    TextAlignment="Left"
                                    VerticalContentAlignment="Top"
                                    FontFamily="Cascadia Code, Consolas, Microsoft YaHei UI"
-                                   Background="{StaticResource CanvasSoftBrush}"
-                                   BorderBrush="{StaticResource BorderSoftBrush}"
                                    BorderThickness="1"
                                    CornerRadius="9"
                                    Padding="10" />
@@ -942,28 +1683,117 @@
           </Grid>
 
           <!-- ===== RIGHT COLUMN (Scheme C visual hierarchy) ===== -->
-          <StackPanel Grid.Column="1" Spacing="14">
-            <Border Classes="right-panel" Padding="14">
+          <Grid Grid.Column="1" Margin="0,53,0,0">
+            <ScrollViewer local:SmoothScrollBehavior.IsEnabled="True"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          IsScrollChainingEnabled="True"
+                          Padding="0,0,12,28">
+            <Border Classes="right-panel" Padding="0">
               <StackPanel Spacing="12">
 
+                <Border x:Name="ConnectionActionGroup" Classes="connection-action-group model-context">
+                  <StackPanel Spacing="12">
                 <!-- Connection / model status -->
-                <Border Classes="status-pill"
-                        HorizontalAlignment="Left"
-                        MinWidth="300"
-                        MaxWidth="420"
-                        Padding="14,7">
-                  <Grid>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
-                      <TextBlock x:Name="GlobalStatusTextBlock"
-                                 Text="未连接"
-                                 Foreground="{StaticResource AccentTextBrush}"
-                                 FontWeight="SemiBold" />
-                      <TextBlock Text="·" Foreground="{StaticResource TextMutedBrush}" />
-                      <TextBlock x:Name="ModelStatusTextBlock"
-                                 Text="模型未加载"
-                                 Classes="muted" />
+                <Border Classes="connection-status-card">
+                  <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                    <StackPanel Grid.Column="0"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                Spacing="8">
+                        <Ellipse x:Name="ConnectionStatusDot"
+                                 Width="8"
+                                 Height="8"
+                                 Fill="{StaticResource AccentBrush}"
+                                 Opacity="0.35"
+                                 VerticalAlignment="Center" />
+                        <TextBlock x:Name="GlobalStatusTextBlock"
+                                   Text="未连接"
+                                   Foreground="{StaticResource AccentTextBrush}"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Text="·" Foreground="{StaticResource TextMutedBrush}" />
+                        <TextBlock x:Name="ModelStatusTextBlock"
+                                   Text="模型未加载"
+                                   Classes="muted" />
                     </StackPanel>
+
+                    <Border x:Name="ConnectionGatePanel"
+                            Grid.Column="1"
+                            Grid.ColumnSpan="2"
+                            Classes="connection-entry animated-panel">
+                      <StackPanel Spacing="8">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <Button x:Name="RemoteConnectionModeButton"
+                                  Classes="segmented-toggle active"
+                                  Padding="10,5"
+                                  FontSize="11"
+                                  Click="ConnectionModeButton_OnClick"
+                                  Tag="remote"
+                                  Content="远程" />
+                          <Button x:Name="LocalConnectionModeButton"
+                                  Classes="segmented-toggle"
+                                  Padding="10,5"
+                                  FontSize="11"
+                                  Click="ConnectionModeButton_OnClick"
+                                  Tag="local"
+                                  Content="本地" />
+                        </StackPanel>
+                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" VerticalAlignment="Center">
+                          <TextBox x:Name="ServerUriTextBox"
+                                   PlaceholderText="ws(s)://"
+                                   Text=""
+                                   FontSize="12"
+                                   Padding="11,7"
+                                   CornerRadius="8"
+                                   VerticalAlignment="Center" />
+                          <StackPanel x:Name="LocalEnvironmentStatusPanel"
+                                      Classes="local-environment"
+                                      Orientation="Horizontal"
+                                      Spacing="7"
+                                      IsVisible="False"
+                                      VerticalAlignment="Center">
+                            <mi:MaterialIcon x:Name="LocalEnvironmentStatusIcon"
+                                             Kind="ClockOutline"
+                                             Width="17"
+                                             Height="17"
+                                             Foreground="{StaticResource TextMutedBrush}" />
+                            <TextBlock x:Name="LocalEnvironmentStatusTextBlock"
+                                       Text="本地环境未设置"
+                                       FontSize="12"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center" />
+                          </StackPanel>
+                          <Button x:Name="LocalEnvironmentSettingsButton"
+                                  Grid.Column="1"
+                                  Classes="secondary-action"
+                                  MinWidth="76"
+                                  Height="36"
+                                  Padding="10,7"
+                                  IsVisible="False"
+                                  Click="LocalEnvironmentSettings_OnClick"
+                                  ToolTip.Tip="配置本地 Server 环境">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                              <mi:MaterialIcon Kind="CogOutline" Width="16" Height="16" />
+                              <TextBlock Text="设置" VerticalAlignment="Center" />
+                            </StackPanel>
+                          </Button>
+                          <Button x:Name="ConnectionToggleButton"
+                                  Grid.Column="2"
+                                  Classes="primary-action"
+                                  MinWidth="72"
+                                  Height="36"
+                                  Padding="12,7"
+                                  VerticalAlignment="Center"
+                                  Click="ConnectionToggleButton_OnClick"
+                                  Content="连接" />
+                        </Grid>
+                      </StackPanel>
+                    </Border>
+
                     <Button x:Name="DisconnectButton"
+                            Grid.Column="2"
                             Classes="secondary-action"
                             Opacity="0"
                             HorizontalAlignment="Right"
@@ -972,7 +1802,7 @@
                             IsEnabled="False"
                             Click="ConnectionToggleButton_OnClick"
                             Content="断开"
-                            Padding="8,4"
+                            Padding="10,5"
                             FontSize="11">
                       <Button.Transitions>
                         <Transitions>
@@ -983,12 +1813,27 @@
                   </Grid>
                 </Border>
 
+                <Border x:Name="CurrentVoiceSummaryPanel"
+                        Classes="current-voice-summary animated-panel">
+                  <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <TextBlock Text="当前音色："
+                               Foreground="{StaticResource TextStrongBrush}"
+                               FontSize="13" />
+                    <TextBlock x:Name="CurrentVoiceNameTextBlock"
+                               Text="原声"
+                               Foreground="{StaticResource AccentTextBrush}"
+                               FontWeight="SemiBold"
+                               FontSize="14" />
+                  </StackPanel>
+                </Border>
+
                 <!-- Primary CTA -->
                 <Button x:Name="StreamingToggleButton"
                         Classes="primary-action"
-                        Height="64"
+                        Height="60"
+                        Margin="0,6,0,0"
                         CornerRadius="11"
-                        FontSize="22"
+                        FontSize="20"
                         HorizontalAlignment="Stretch"
                         Click="StreamingToggleButton_OnClick">
                   <StackPanel Orientation="Horizontal"
@@ -996,17 +1841,19 @@
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center">
                     <mi:MaterialIcon Kind="Microphone"
-                                     Width="24"
-                                     Height="24"
+                                     Width="22"
+                                     Height="22"
                                      Foreground="White"
                                      VerticalAlignment="Center" />
                     <TextBlock Text="开始变声"
                                Foreground="White"
-                               FontSize="22"
+                               FontSize="20"
                                FontWeight="SemiBold"
                                VerticalAlignment="Center" />
                   </StackPanel>
                 </Button>
+                  </StackPanel>
+                </Border>
 
                 <!-- Sync Status -->
                 <Border x:Name="SyncErrorPanel"
@@ -1028,8 +1875,8 @@
                 </Border>
 
                 <!-- Audio Devices -->
-                <Border Classes="right-section-card">
-                  <StackPanel Spacing="9">
+                <Border Classes="right-section-card audio-device-card">
+                  <StackPanel Spacing="16">
                     <Grid ColumnDefinitions="*,Auto">
                       <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                         <mi:MaterialIcon Kind="VolumeHigh" Width="17" Height="17" Foreground="{StaticResource AccentBrush}" />
@@ -1046,44 +1893,44 @@
                         </StackPanel>
                       </Button>
                     </Grid>
-                    <StackPanel Spacing="4">
+                    <StackPanel Spacing="6">
                       <TextBlock Text="输入设备" Classes="latency-label" />
-                      <ComboBox x:Name="InputDeviceComboBox" PlaceholderText="输入设备" MinHeight="38" />
+                      <local:AnimatedComboBox x:Name="InputDeviceComboBox" PlaceholderText="输入设备" MinHeight="44" />
                     </StackPanel>
-                    <StackPanel Spacing="4">
+                    <StackPanel Spacing="6">
                       <TextBlock Text="输出设备" Classes="latency-label" />
-                      <ComboBox x:Name="OutputDeviceComboBox" PlaceholderText="输出设备" MinHeight="38" />
+                      <local:AnimatedComboBox x:Name="OutputDeviceComboBox" PlaceholderText="输出设备" MinHeight="44" />
                     </StackPanel>
                   </StackPanel>
                 </Border>
 
                 <!-- Latency Monitoring -->
-                <Border Classes="right-section-card">
-                  <StackPanel Spacing="9">
+                <Border Classes="right-section-card latency-monitor-card">
+                  <StackPanel Spacing="14">
                     <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                       <mi:MaterialIcon Kind="ClockFast" Width="17" Height="17" Foreground="{StaticResource AccentBrush}" />
                       <TextBlock Text="时延监控" Classes="right-section-title" VerticalAlignment="Center" />
                     </StackPanel>
-                    <Border Classes="total-latency-card">
-                      <StackPanel Spacing="1">
-                        <TextBlock Text="总时延估计" Classes="latency-label" HorizontalAlignment="Center" />
-                        <TextBlock x:Name="TotalLatencyTextBlock" Classes="total-latency-value" Text="-- ms" />
-                      </StackPanel>
-                    </Border>
-                    <Grid ColumnDefinitions="*,*,*" ColumnSpacing="7">
+                    <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="7">
                       <Border Classes="compact-metric-card">
+                        <StackPanel Spacing="1" HorizontalAlignment="Center">
+                          <TextBlock Text="总时延估计" Classes="latency-label" HorizontalAlignment="Center" />
+                          <TextBlock x:Name="TotalLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
+                        </StackPanel>
+                      </Border>
+                      <Border Grid.Column="1" Classes="compact-metric-card">
                         <StackPanel Spacing="1" HorizontalAlignment="Center">
                           <TextBlock Classes="latency-label" Text="网络 RTT" HorizontalAlignment="Center" />
                           <TextBlock x:Name="NetworkLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
                         </StackPanel>
                       </Border>
-                      <Border Grid.Column="1" Classes="compact-metric-card">
+                      <Border Grid.Column="2" Classes="compact-metric-card">
                         <StackPanel Spacing="1" HorizontalAlignment="Center">
                           <TextBlock Classes="latency-label" Text="Server 队列" HorizontalAlignment="Center" />
                           <TextBlock x:Name="ServerQueueLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
                         </StackPanel>
                       </Border>
-                      <Border Grid.Column="2" Classes="compact-metric-card">
+                      <Border Grid.Column="3" Classes="compact-metric-card">
                         <StackPanel Spacing="1" HorizontalAlignment="Center">
                           <TextBlock Classes="latency-label" Text="推理耗时" HorizontalAlignment="Center" />
                           <TextBlock x:Name="InferenceLatencyTextBlock" Classes="latency-value" Text="-- ms" HorizontalAlignment="Center" />
@@ -1094,8 +1941,8 @@
                 </Border>
 
                 <!-- Waveform -->
-                <Border Classes="right-section-card">
-                  <StackPanel Spacing="8">
+                <Border Classes="right-section-card waveform-monitor-card">
+                  <StackPanel Spacing="14">
                     <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="7">
                       <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                         <mi:MaterialIcon Kind="Waveform" Width="17" Height="17" Foreground="{StaticResource AccentBrush}" />
@@ -1106,7 +1953,7 @@
                       <Ellipse Grid.Column="3" Width="7" Height="7" Fill="#E87878" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="4" Text="输出（变声后）" FontSize="10" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" />
                     </Grid>
-                    <Border Classes="waveform-panel" Height="128">
+                    <Border Classes="waveform-panel" Height="156">
                       <Canvas x:Name="WaveformCanvas" />
                     </Border>
                   </StackPanel>
@@ -1114,11 +1961,15 @@
 
               </StackPanel>
             </Border>
+            </ScrollViewer>
 
             <StackPanel x:Name="ToastHostPanel"
                         HorizontalAlignment="Stretch"
+                        VerticalAlignment="Bottom"
+                        Margin="0,0,12,16"
+                        ZIndex="20"
                         IsHitTestVisible="False" />
-          </StackPanel>
+          </Grid>
 
         </Grid>
       </Grid>

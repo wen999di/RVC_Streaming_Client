@@ -9,6 +9,7 @@ public sealed class RvcClientService : IAsyncDisposable
 {
     private ClientWebSocket? _controlSocket;
     private ClientWebSocket? _audioSocket;
+    private LocalServerSession? _localSession;
     private CancellationTokenSource? _connectionCts;
     private CancellationTokenSource? _pingCts;
     private readonly SemaphoreSlim _controlSendLock = new(1, 1);
@@ -17,7 +18,12 @@ public sealed class RvcClientService : IAsyncDisposable
     private long _generation;
 
     public bool IsConnected =>
-        _controlSocket?.State == WebSocketState.Open && _audioSocket?.State == WebSocketState.Open;
+        _localSession?.IsOpen == true
+        || (_controlSocket?.State == WebSocketState.Open && _audioSocket?.State == WebSocketState.Open);
+
+    public bool IsLocalConnection => _localSession?.IsOpen == true;
+
+    public long ConnectionGeneration => Interlocked.Read(ref _generation);
 
     public event EventHandler<string>? LogReceived;
     public event EventHandler<bool>? ConnectionStateChanged;
@@ -84,6 +90,60 @@ public sealed class RvcClientService : IAsyncDisposable
         }
     }
 
+    public async Task ConnectLocalAsync(string serverDirectory)
+    {
+        await _lifecycleLock.WaitAsync();
+        try
+        {
+            if (IsConnected) return;
+            await DisconnectCoreAsync(null, false);
+
+            var cts = new CancellationTokenSource();
+            var generation = Interlocked.Increment(ref _generation);
+            var session = new LocalServerSession(serverDirectory);
+            session.LogReceived += (_, message) => RaiseLog(message);
+            session.TextMessageReceived += (_, message) =>
+            {
+                if (generation == Interlocked.Read(ref _generation))
+                    TextMessageReceived?.Invoke(this, message);
+            };
+            session.BinaryMessageReceived += (_, message) =>
+            {
+                if (generation == Interlocked.Read(ref _generation))
+                    BinaryMessageReceived?.Invoke(this, message);
+            };
+            session.Closed += (_, reason) =>
+            {
+                if (generation == Interlocked.Read(ref _generation))
+                    _ = DisconnectAsync(reason);
+            };
+
+            try
+            {
+                await session.StartAsync(cts.Token);
+            }
+            catch
+            {
+                cts.Cancel();
+                await session.DisposeAsync();
+                cts.Dispose();
+                throw;
+            }
+
+            _localSession = session;
+            _connectionCts = cts;
+            _pingCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+            _ = Task.Run(() => PingLoopAsync(_pingCts.Token), _pingCts.Token);
+
+            RaiseLog($"已通过私有进程管道连接本地 Server：{Path.GetFullPath(serverDirectory)}");
+            ConnectionStateChanged?.Invoke(this, true);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
     public async Task DisconnectAsync(string reason = "已断开连接")
     {
         await _lifecycleLock.WaitAsync();
@@ -102,6 +162,16 @@ public sealed class RvcClientService : IAsyncDisposable
         var json = JsonSerializer.Serialize(commandObj);
         var bytes = Encoding.UTF8.GetBytes(json);
         bool audioRoute = IsAudioControl(json);
+        if (_localSession is { } localSession)
+        {
+            return SendLocalAsync(
+                localSession,
+                audioRoute ? LocalServerChannel.Audio : LocalServerChannel.Control,
+                bytes,
+                true,
+                cancellationToken,
+                audioRoute ? "音频控制命令" : "命令");
+        }
         return SendAsync(
             audioRoute ? _audioSocket : _controlSocket,
             audioRoute ? _audioSendLock : _controlSendLock,
@@ -113,10 +183,14 @@ public sealed class RvcClientService : IAsyncDisposable
 
     // File-transfer binary frames use the control channel.
     public Task SendBinaryAsync(byte[] payload, CancellationToken cancellationToken = default) =>
-        SendAsync(_controlSocket, _controlSendLock, payload, WebSocketMessageType.Binary, cancellationToken, "文件数据");
+        _localSession is { } localSession
+            ? SendLocalAsync(localSession, LocalServerChannel.Control, payload, false, cancellationToken, "文件数据")
+            : SendAsync(_controlSocket, _controlSendLock, payload, WebSocketMessageType.Binary, cancellationToken, "文件数据");
 
     public Task SendAudioAsync(byte[] payload, CancellationToken cancellationToken = default) =>
-        SendAsync(_audioSocket, _audioSendLock, payload, WebSocketMessageType.Binary, cancellationToken, "音频数据");
+        _localSession is { } localSession
+            ? SendLocalAsync(localSession, LocalServerChannel.Audio, payload, false, cancellationToken, "音频数据")
+            : SendAsync(_audioSocket, _audioSendLock, payload, WebSocketMessageType.Binary, cancellationToken, "音频数据");
 
     public async ValueTask DisposeAsync()
     {
@@ -197,6 +271,39 @@ public sealed class RvcClientService : IAsyncDisposable
         }
     }
 
+    private async Task SendLocalAsync(
+        LocalServerSession session,
+        LocalServerChannel channel,
+        byte[] payload,
+        bool isText,
+        CancellationToken cancellationToken,
+        string label)
+    {
+        if (!session.IsOpen)
+        {
+            RaiseLog($"{label}发送失败：本地进程管道未就绪");
+            if (_connectionCts != null)
+                await DisconnectAsync("连接已关闭");
+            return;
+        }
+
+        try
+        {
+            if (isText)
+                await session.SendTextAsync(channel, payload, cancellationToken);
+            else
+                await session.SendBinaryAsync(channel, payload, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            RaiseLog($"{label}发送失败: {ex.Message}");
+            await DisconnectAsync("连接已关闭");
+        }
+    }
+
     private async Task PingLoopAsync(CancellationToken token)
     {
         try
@@ -263,12 +370,14 @@ public sealed class RvcClientService : IAsyncDisposable
     {
         var control = _controlSocket;
         var audio = _audioSocket;
+        var local = _localSession;
         var cts = _connectionCts;
         var pingCts = _pingCts;
-        bool hadConnection = control != null || audio != null;
+        bool hadConnection = control != null || audio != null || local != null;
 
         _controlSocket = null;
         _audioSocket = null;
+        _localSession = null;
         _connectionCts = null;
         _pingCts = null;
         Interlocked.Increment(ref _generation);
@@ -278,6 +387,8 @@ public sealed class RvcClientService : IAsyncDisposable
 
         await CloseSocketAsync(control);
         await CloseSocketAsync(audio);
+        if (local is not null)
+            await local.DisposeAsync();
         cts?.Dispose();
         pingCts?.Dispose();
 

@@ -19,5 +19,6 @@
 
   <ItemGroup>
     <AvaloniaResource Include="Fonts\**" />
+    <Compile Remove="tests\**\*.cs" />
   </ItemGroup>
 </Project>
